@@ -1,12 +1,11 @@
 package com.itheima.clinicserver.controller;
 
-import com.itheima.clinicserver.mapper.DoctorMapper;
+
 import com.itheima.clinicserver.pojo.Doctor;
 import com.itheima.clinicserver.service.DoctorService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.ArrayList;
 import java.util.List;
 
 @RestController
@@ -15,7 +14,7 @@ public class DoctorController {
 
 
     @Autowired
-    private DoctorService service; // 注入刚才写的Mapper
+    private DoctorService service;
 
     // 查询列表接口
     @GetMapping("/list")
@@ -31,8 +30,8 @@ public class DoctorController {
     }
 
     @PutMapping("/update")
-    public String update(@RequestBody Doctor d){service.update(d); return "成功";};
+    public String update(@RequestBody Doctor d){service.update(d); return "成功";}
 
     @DeleteMapping("/delete/{id}")
-    public String delete(@PathVariable Integer id){ service.delete(id); return  "成功";};
+    public String delete(@PathVariable Integer id){ service.delete(id); return  "成功";}
 }

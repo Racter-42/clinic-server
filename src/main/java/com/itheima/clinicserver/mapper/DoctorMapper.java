@@ -2,7 +2,6 @@ package com.itheima.clinicserver.mapper;
 
 import com.itheima.clinicserver.pojo.Doctor;
 import org.apache.ibatis.annotations.*;
-import org.springframework.web.bind.annotation.DeleteMapping;
 
 import java.util.List;
 
