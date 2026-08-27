@@ -3,16 +3,18 @@ package com.itheima.clinicserver.pojo;
 public class Doctor {
     private Integer id;
     private String name;
-    private String department;
     private String title;
+    private String licenseNo;
+
 
     public Doctor() {
     }
 
-    public Doctor(Integer id, String name, String title) {
+    public Doctor(Integer id, String name, String title,String licenseNo) {
         this.id = id;
         this.name = name;
         this.title = title;
+        this.licenseNo = licenseNo;
 
     }
 
@@ -32,12 +34,12 @@ public class Doctor {
         this.name = name;
     }
 
-    public String getDepartment() {
-        return department;
+    public String getLicenseNo() {
+        return licenseNo;
     }
 
-    public void setDepartment(String department) {
-        this.department = department;
+    public void setLicenseNo(String licenseNo) {
+        this.licenseNo = licenseNo;
     }
 
     public String getTitle() {

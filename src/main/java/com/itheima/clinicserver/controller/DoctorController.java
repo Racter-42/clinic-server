@@ -1,11 +1,11 @@
 package com.itheima.clinicserver.controller;
 
+import com.itheima.clinicserver.mapper.DoctorMapper;
 import com.itheima.clinicserver.pojo.Doctor;
 import com.itheima.clinicserver.service.DoctorService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
-import javax.print.Doc;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -14,28 +14,25 @@ import java.util.List;
 public class DoctorController {
 
 
-    private static List<Doctor> doctorList = new ArrayList<>();
+    @Autowired
+    private DoctorService service; // 注入刚才写的Mapper
 
-    static {
-        doctorList.add(new Doctor(1,"王五一","主治医师"));
-        doctorList.add(new Doctor(2,"李六六","副主任医师"));
-    }
-
+    // 查询列表接口
     @GetMapping("/list")
-    public List<Doctor> list(){
-        return doctorList;
+    public List<Doctor> list() {
+        return service.listAll();
     }
 
+    // 新增接口
     @PostMapping("/add")
-    public String add(@RequestBody Doctor doctor){
-
-        doctorList.add(doctor);
-        return "新增成功";
+    public String add(@RequestBody Doctor d) {
+        service.insert(d);
+        return "成功";
     }
+
+    @PutMapping("/update")
+    public String update(@RequestBody Doctor d){service.update(d); return "成功";};
 
     @DeleteMapping("/delete/{id}")
-    public String delete(@PathVariable Integer id){
-        doctorList.removeIf(doctor -> doctor.getId().equals(id));
-        return "删除成功";
-    }
+    public String delete(@PathVariable Integer id){ service.delete(id); return  "成功";};
 }
