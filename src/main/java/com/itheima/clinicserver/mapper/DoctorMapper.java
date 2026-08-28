@@ -20,18 +20,18 @@ public interface DoctorMapper {
     @Delete("delete from doctor where id = #{id}")
     void delete(Integer id);
 
-    // 动态条件查询
-    /*@Select("<script>" +
-            "select * from doctor where 1=1 " +
-            "<if test='name != null and name != \"\"'> and name like concat('%', #{name}, '%') </if>" +
-            "<if test='title != null and title != \"\"'> and title = #{title} </if>" +
-            "</script>")
-    List<Doctor> selectByCondition(@Param("name") String name, @Param("title") String title);
+    @Select("select * from doctor limit #{offset}, #{pageSize}")
+    List<Doctor> page(@Param("offset") int offset, @Param("pageSize") int pageSize);
 
-    // 批量删除
-    @Delete("<script>" +
-            "delete from doctor where id in " +
-            "<foreach collection='list' item='id' open='(' separator=',' close=')'>#{id} </foreach>" +
+    @Select("<script>" +
+            "select * from doctor " +
+            "where status = 0 " +
+            "<if test='deptId != null'> and dept_id = #{deptId} </if>" +
+            "<if test='title != null and title != \"\"'> and title = #{title} </if>" +
+            "limit #{offset}, #{pageSize}" +
             "</script>")
-    void deleteBatch(List<Integer> ids);*/
+    List<Doctor> pageByCondition(@Param("deptId") Integer deptId,
+                                 @Param("title") String title,
+                                 @Param("offset") int offset,
+                                 @Param("pageSize") int pageSize);
 }
