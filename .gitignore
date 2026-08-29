@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### 本地配置：含数据库密码，禁止提交 ###
+src/main/resources/application.properties
+*.local.properties

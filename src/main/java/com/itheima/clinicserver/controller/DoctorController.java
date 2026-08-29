@@ -2,6 +2,7 @@ package com.itheima.clinicserver.controller;
 
 
 import com.itheima.clinicserver.pojo.Doctor;
+import com.itheima.clinicserver.pojo.Result;
 import com.itheima.clinicserver.service.DoctorService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -34,4 +35,11 @@ public class DoctorController {
 
     @DeleteMapping("/delete/{id}")
     public String delete(@PathVariable Integer id){ service.delete(id); return  "成功";}
+
+    // ========== 科室在岗医生数统计 ==========
+    @GetMapping("/countByDept")                    // 完整地址：GET /doctor/countByDept
+    public Result countByDept() {
+        return Result.success(service.countByDept());   // 把统计结果塞进 data 返回
+    }
+
 }
