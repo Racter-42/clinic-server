@@ -32,4 +32,12 @@ public class ScheduleController {
     public Result list() {
         return Result.success(service.listAll());  // 把列表塞进 data 字段返回
     }
+
+    // ========== 4. 按科室 + 天数查询排班 ==========
+    @GetMapping("/queryByDept")                     // 完整地址：GET /schedule/queryByDept
+    public Result queryByDept(@RequestParam Integer deptId,        //  URL 里的 ?deptId=1
+                              @RequestParam(defaultValue = "7") int days) {  //  ?days=7，不传默认 7
+        return Result.success(service.queryByDept(deptId, days));  // 结果塞进 data 返回
+    }
+
 }

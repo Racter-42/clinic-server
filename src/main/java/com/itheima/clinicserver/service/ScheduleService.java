@@ -2,6 +2,7 @@ package com.itheima.clinicserver.service;   // service 包：写业务逻辑
 
 import com.itheima.clinicserver.mapper.ScheduleMapper;
 import com.itheima.clinicserver.pojo.Schedule;
+import com.itheima.clinicserver.pojo.ScheduleVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import java.util.List;
@@ -33,4 +34,10 @@ public class ScheduleService {
     public List<Schedule> listAll() {
         return mapper.listAll();             // 直接调 Mapper，没有额外逻辑
     }
+
+    // ========== 4. 按科室 + 天数查询排班 ==========
+    public List<ScheduleVO> queryByDept(Integer deptId, int days) {  // 参数从 Controller 传进来
+        return mapper.queryByDept(deptId, days);   // 纯查询，直接调 Mapper
+    }
+
 }
