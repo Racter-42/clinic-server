@@ -1,20 +1,20 @@
 package com.itheima.clinicserver.controller;
 
-import com.itheima.clinicserver.mapper.SourceMapper;
 import com.itheima.clinicserver.pojo.Result;
+import com.itheima.clinicserver.service.SourceService;   // 改为注入 Service（原来直接注入 Mapper）
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
-@RestController                              // 接口类，返回 JSON
-@RequestMapping("/source")                   // 统一前缀 /source
+@RestController
+@RequestMapping("/source")
 public class SourceController {
 
-    @Autowired                               // 注入号源 Mapper
-    private SourceMapper sourceMapper;       // 查询没有业务逻辑，直接用 Mapper 即可
+    @Autowired
+    private SourceService sourceService;        // 注入 Service（缓存逻辑在 Service 里）
 
-    // ========== 查询未来 7 天可约号源（患者端用）==========
-    @GetMapping("/list")                     // 完整地址：GET /source/list
+    // ========== 查询未来 7 天可约号源（患者端用，带缓存）==========
+    @GetMapping("/list")
     public Result list() {
-        return Result.success(sourceMapper.listFuture7Days());   // 列表塞进 data 字段
+        return Result.success(sourceService.listFuture7Days());   // 调 Service（内部有缓存三防）
     }
 }
