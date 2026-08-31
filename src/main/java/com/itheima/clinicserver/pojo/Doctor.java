@@ -49,4 +49,15 @@ public class Doctor {
     public void setTitle(String title) {
         this.title = title;
     }
+
+    // toString：让审计日志能打出业务字段，而不是 Doctor@3bbc01aa
+    @Override
+    public String toString() {
+        return "Doctor{" +
+                "id=" + id +
+                ", name='" + name + '\'' +
+                ", title='" + title + '\'' +
+                ", licenseNo='" + licenseNo + '\'' +
+                '}';
+    }
 }

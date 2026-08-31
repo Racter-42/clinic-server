@@ -50,4 +50,17 @@ public class Schedule {
     public void setVersion(Integer version) {
         this.version = version;
     }
+
+    // toString：让审计日志能打出业务字段，而不是 Schedule@hashcode
+    @Override
+    public String toString() {
+        return "Schedule{" +
+                "id=" + id +
+                ", doctorId=" + doctorId +
+                ", shiftDate='" + shiftDate + '\'' +
+                ", shiftType=" + shiftType +
+                ", createTime='" + createTime + '\'' +
+                ", version=" + version +
+                '}';
+    }
 }

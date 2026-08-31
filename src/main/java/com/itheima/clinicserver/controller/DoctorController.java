@@ -20,8 +20,8 @@ public class DoctorController {
 
     @Operation(summary = "查询医生列表")
     @GetMapping("/list")
-    public List<Doctor> list() {
-        return service.listAll();
+    public Result list() {
+        return Result.success(service.listAll());
     }
 
     @Operation(summary = "新增医生")
