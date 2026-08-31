@@ -2,11 +2,17 @@ package com.itheima.clinicserver.controller;
 
 import com.itheima.clinicserver.pojo.LoginDTO;
 import com.itheima.clinicserver.utils.JwtUtils;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.*; // 引入 Spring MVC 的注解（* = 全部）
 
+
+@Tag(name = "登录", description = "登录相关接口")
 @RestController                                  // 告诉 Spring：这是"接口类"，返回值直接当数据返回
 public class LoginController {
 
+
+    @Operation(summary = "用户登录")
     @PostMapping("/login")
     public String login(@RequestBody LoginDTO dto) {
         // @RequestBody：把前端 JSON 自动转成 LoginDTO 对象

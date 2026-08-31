@@ -18,7 +18,9 @@ public class WebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(loginInterceptor)
                 .addPathPatterns("/**")           // 拦截所有
-                .excludePathPatterns("/login", "/uploads/**");   // 放行登录 + 静态资源
+                .excludePathPatterns("/login", "/uploads/**", "/doc.html", "/webjars/**", "/v3/api-docs/**",      //  放行 Knife4j 页面 + 资源 + 数据（/** 覆盖 swagger-config、?group=default 等子路径）
+                        "/swagger-ui/**", "/knife4j/**"
+                );   // 放行登录 + 静态资源
     }
 
     // ========== 配置静态资源映射==========
@@ -27,4 +29,5 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addResourceHandler("/uploads/**")            // 浏览器访问 /uploads/xxx.jpg
                 .addResourceLocations("file:D:/uploads/");    //  映射到本地磁盘目录
     }
+
 }
