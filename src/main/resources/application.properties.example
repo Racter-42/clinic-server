@@ -11,3 +11,13 @@ spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
 
 # 开启自动驼峰命名映射（把数据库的 license_no 自动映射到 Java 的 licenseNo）
 mybatis.configuration.map-underscore-to-camel-case=true
+
+# 文件上传大小限制（Spring Boot 默认单文件 1MB、总请求 10MB）
+spring.servlet.multipart.max-file-size=10MB
+spring.servlet.multipart.max-request-size=10MB
+# 延迟解析上传请求：让"文件超限"异常在 Controller 层抛出，
+# 从而被全局异常处理器捕获并返回统一 JSON（否则是 Tomcat 的 HTML 错误页）
+spring.servlet.multipart.resolve-lazily=true
+
+# 文件上传目录（相对项目根目录，或写绝对路径如 D:/uploads/）
+clinic.upload.path=./uploads/

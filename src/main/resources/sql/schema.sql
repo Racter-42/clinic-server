@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS `clinic_dept` (
 -- 2. 医生表
 --    注意：license_no（执业证号）有唯一索引，重复插入会抛
 --    DuplicateKeyException → 全局异常处理转成 4001
+--    avatar：医生头像访问 URL（/uploads/uuid.jpg），由知识点 5 图片上传写入
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `doctor` (
   `id` int NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS `doctor` (
   `license_no` varchar(30) DEFAULT NULL COMMENT '执业证号',
   `dept_id` int DEFAULT NULL COMMENT '科室ID',
   `status` tinyint DEFAULT '0' COMMENT '0在岗/1停诊/2离职',
+  `avatar` varchar(255) DEFAULT NULL COMMENT '头像访问URL（/uploads/xxx.jpg）',
   `create_time` datetime DEFAULT CURRENT_TIMESTAMP,
   `update_time` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

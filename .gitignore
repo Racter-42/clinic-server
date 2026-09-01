@@ -35,3 +35,6 @@ build/
 ### 本地配置：含数据库密码，禁止提交 ###
 src/main/resources/application.properties
 *.local.properties
+
+### 上传目录：运行时产生的数据，不是代码，禁止提交 ###
+uploads/
