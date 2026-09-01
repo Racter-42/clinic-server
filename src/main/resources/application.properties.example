@@ -21,3 +21,11 @@ spring.servlet.multipart.resolve-lazily=true
 
 # 文件上传目录（相对项目根目录，或写绝对路径如 D:/uploads/）
 clinic.upload.path=./uploads/
+
+# ============================================
+# Deepseek 智能导诊配置
+# ⚠️ 本文件是公开模板，绝不能写真实 API Key！
+#    真实 Key 只写在 application.properties（已被 gitignore 忽略）
+# ============================================
+deepseek.api-key=你的Deepseek API Key
+deepseek.api-url=https://api.deepseek.com/chat/completions
