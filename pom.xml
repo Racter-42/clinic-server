@@ -8,7 +8,7 @@
         <version>4.1.1</version>
         <relativePath/> <!-- lookup parent from repository -->
     </parent>
-    <groupId>com.itheima</groupId>
+    <groupId>com.xiaoyu</groupId>
     <artifactId>clinic-server</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>clinic-server</name>

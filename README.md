@@ -74,7 +74,7 @@ reserve_record  预约记录表 uk_source_id (source_id) + idx_patient_phone (pa
 ## 目录结构
 
 ```
-src/main/java/com/itheima/clinicserver
+src/main/java/com/xiaoyu/clinic
 ├── controller      # 接口层
 ├── service         # 业务逻辑层（事务在此）
 ├── mapper          # MyBatis 映射层（注解方式）
