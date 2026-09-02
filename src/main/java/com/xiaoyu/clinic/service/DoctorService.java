@@ -7,10 +7,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
-import java.util.Collections;                              //  空列表
+import java.util.Collections;                              // 空列表
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ThreadLocalRandom;            //  随机数（防雪崩）
+import java.util.concurrent.ThreadLocalRandom;            // 随机数（防雪崩）
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -22,17 +22,14 @@ public class DoctorService {
     @Autowired
     private StringRedisTemplate redisTemplate;
 
-    // ========== 带缓存 + 三防的医生列表查询==========
+    // ========== 带缓存 + 三防的医生列表查询 ==========
     public List<Doctor> listAll() {
         String key = "doctor:list";                        // 缓存的 key
 
         // ① 防穿透（第一道）：先查缓存
-        String cached = redisTemplate.opsForValue().get(key);
-        if (cached != null) {                              // 缓存里有东西
-            if ("EMPTY".equals(cached)) {                  // 是"空对象占位"？
-                return Collections.emptyList();            // 返回空列表（不是 null）
-            }
-            return JSON.parseArray(cached, Doctor.class);  // 是真数据 → 反序列化返回
+        List<Doctor> cachedList = readCache(key);
+        if (cachedList != null) {
+            return cachedList;
         }
 
         // ② 防击穿（第二道）：互斥锁 SETNX，只让 1 个线程查数据库
@@ -40,42 +37,64 @@ public class DoctorService {
         Boolean locked = redisTemplate.opsForValue()
                 .setIfAbsent(lockKey, "1", 10, TimeUnit.SECONDS);   // 抢锁（不存在才成功）
         if (Boolean.TRUE.equals(locked)) {                 // 抢到锁了
-
             try {
                 // 双重检查：等锁的线程可能已经把缓存写好了，别再查一次库
-                cached = redisTemplate.opsForValue().get(key);
-                if (cached != null) {
-                    return "EMPTY".equals(cached)
-                            ? Collections.emptyList()      // 空占位 → 空列表
-                            : JSON.parseArray(cached, Doctor.class);
+                cachedList = readCache(key);
+                if (cachedList != null) {
+                    return cachedList;
                 }
-
-                // 真正查数据库（只有抢到锁的这 1 个线程会执行）
-                List<Doctor> list = mapper.listAll();
-
-                if (list.isEmpty()) {
-                    // 防穿透：查不到也写个"EMPTY"占位，2 分钟短过期（万一以后真有数据能尽快读到）
-                    redisTemplate.opsForValue().set(key, "EMPTY", 2, TimeUnit.MINUTES);
-                } else {
-                    // 防雪崩：过期时间加随机值（30~32 分钟），避免大批 key 同时过期
-                    int ttl = 30 + ThreadLocalRandom.current().nextInt(3);
-                    redisTemplate.opsForValue().set(key, JSON.toJSONString(list), ttl, TimeUnit.MINUTES);
-                }
-                return list;
-
+                // 真正查库 + 写缓存（只有抢到锁的这 1 个线程会执行）
+                return queryAndCache(key);
             } finally {
                 redisTemplate.delete(lockKey);             // 释放锁（必须 finally，出异常也释放）
             }
-
-        } else {
-            // 没抢到锁：说明别的线程正在查库，等 50ms 再重试（此时缓存多半已写好）
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-            return listAll();                              // 递归重试
         }
+
+        // 没抢到锁：说明别的线程正在查库，它的活干完缓存就有了。
+        // 但数据库偶尔会慢，锁最长也只活 10 秒，万一持锁线程卡住，
+        // 咱不能跟着无限递归干等（递归太深会栈溢出）——所以最多等 3 轮，每轮 50ms。
+        for (int i = 0; i < 3; i++) {
+            try {
+                Thread.sleep(50);                          // 睡 50ms，让持锁线程把缓存写好
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();        // 恢复中断标记，别把中断状态吞了
+                break;
+            }
+            cachedList = readCache(key);                   // 醒来先看一眼缓存好了没
+            if (cachedList != null) {
+                return cachedList;
+            }
+        }
+        // 等了 3 轮还没有：估计持锁线程出状况了（比如数据库超时）。
+        // 直接查库兜底——数据永远以库为准，缓存只是加速，查一次库不会错。
+        return mapper.listAll();
+    }
+
+    /** 从 Redis 读缓存并转成对象；没缓存返回 null（EMPTY 占位转成空列表返回） */
+    private List<Doctor> readCache(String key) {
+        String cached = redisTemplate.opsForValue().get(key);
+        if (cached == null) {
+            return null;
+        }
+        if ("EMPTY".equals(cached)) {                      // 是"空对象占位"？
+            return Collections.emptyList();                // 返回空列表（不是 null）
+        }
+        return JSON.parseArray(cached, Doctor.class);      // 是真数据 → 反序列化返回
+    }
+
+    /** 查数据库并把结果写进缓存（防穿透占位 + 防雪崩随机过期） */
+    private List<Doctor> queryAndCache(String key) {
+        List<Doctor> list = mapper.listAll();
+
+        if (list.isEmpty()) {
+            // 防穿透：查不到也写个"EMPTY"占位，2 分钟短过期（万一以后真有数据能尽快读到）
+            redisTemplate.opsForValue().set(key, "EMPTY", 2, TimeUnit.MINUTES);
+        } else {
+            // 防雪崩：过期时间加随机值（30~32 分钟），避免大批 key 同时过期
+            int ttl = 30 + ThreadLocalRandom.current().nextInt(3);
+            redisTemplate.opsForValue().set(key, JSON.toJSONString(list), ttl, TimeUnit.MINUTES);
+        }
+        return list;
     }
 
     public void insert(Doctor d){ mapper.insert(d);}
