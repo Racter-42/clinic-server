@@ -14,10 +14,13 @@ public interface SourceMapper {
     void insert(Source source);
 
     // ========== 2. 查询未来 7 天可约号源 ==========
-    @Select("select * from source "
-            + "where shift_date >= curdate() "                   // curdate() = 今天
-            + "and shift_date < date_add(curdate(), interval 7 day)")  // 今天+7天之前
-    List<Source> listFuture7Days();         // 返回未来 7 天的号源列表
+    // LEFT JOIN doctor：号源表只存 doctor_id，页面要显示医生姓名，
+    // 查的时候顺手把 doctor 表的 name 带出来，前端就不用自己再查一次医生接口了
+    @Select("select s.*, d.name as doctorName from source s "
+            + "left join doctor d on s.doctor_id = d.id "
+            + "where s.shift_date >= curdate() "                   // curdate() = 今天
+            + "and s.shift_date < date_add(curdate(), interval 7 day)")  // 今天+7天之前
+    List<Source> listFuture7Days();         // 返回未来 7 天的号源列表（带医生姓名）
 
     // ========== 3. 号源扣减（乐观锁：只更新"还空着"的号源）==========
     // 关键：把"判断"和"修改"压进一条 SQL，靠数据库的行锁保证原子性

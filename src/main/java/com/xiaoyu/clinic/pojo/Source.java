@@ -4,6 +4,7 @@ public class Source {
 
     private Integer id;
     private Integer doctorId;
+    private String  doctorName;   // 医生姓名（列表接口 LEFT JOIN doctor 带出来的，页面直接显示用）
     private String  shiftDate;
     private String  timeSlot;
     private Integer status;
@@ -21,6 +22,13 @@ public class Source {
     }
     public void setDoctorId(Integer doctorId) {
         this.doctorId = doctorId;
+    }
+
+    public String getDoctorName() {
+        return doctorName;
+    }
+    public void setDoctorName(String doctorName) {
+        this.doctorName = doctorName;
     }
 
     public String getShiftDate() {
