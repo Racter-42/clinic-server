@@ -29,3 +29,6 @@ clinic.upload.path=./uploads/
 # ============================================
 deepseek.api-key=你的Deepseek API Key
 deepseek.api-url=https://api.deepseek.com/chat/completions
+# 连接超时/读取超时（毫秒）：对方 3 秒连不上或 5 秒不回话就放弃，防止请求一直挂着占线程
+deepseek.connect-timeout=3000
+deepseek.read-timeout=5000
