@@ -8,6 +8,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.concurrent.TimeUnit;
 
@@ -73,5 +75,22 @@ public class ReserveService {
 
         //  能走到这里 = 两步都成功 = 事务提交
         // 方法正常返回（没有抛异常）→ Spring 提交事务 → 号源 status=1 和预约记录同时生效
+
+        // ===== 收尾：预约成功了，号源列表缓存得作废 =====
+        // 数据库里 status 已经是 1，但 Redis 里存的"未来 7 天号源"还是预约前的旧数据，
+        // 不删掉的话，前端刷新 /source/list 命中缓存，看到的还是"可预约"（之前踩过的坑）。
+        // 为什么不能直接在这行后面 delete？
+        //   @Transactional 的提交时机是方法跑完、正常返回的那一刻；
+        //   现在立刻删缓存 → 事务还没提交 → 别的请求来查库，读到的是 status=0 的旧值
+        //   → 又把旧数据写回缓存 → 删了等于白删。
+        // 所以注册一个"等事务提交完再执行"的回调，时机正好卡在提交之后，一次删干净。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                // 删掉号源列表缓存（和 SourceService 里那个 key 是同一个），
+                // 下次 /source/list 就会重新查库，把最新状态写进缓存
+                redisTemplate.delete("source:list:future7days");
+            }
+        });
     }
 }
