@@ -21,7 +21,7 @@
 - 后端：Spring Boot 4.1.1 + MyBatis 4.1.0 + JDK 17
 - 存储：MySQL 8（InnoDB / utf8mb4）+ Redis（StringRedisTemplate）
 - 安全：JWT（jjwt 0.12.5）+ 拦截器白名单
-- 工程化：Spring AOP 审计日志 + `@RestControllerAdvice` 全局异常处理 + Knife4j 5.4.0 接口文档
+- 工程化：Spring AOP 审计日志 + `@RestControllerAdvice` 全局异常处理 + Jakarta Validation 参数校验 + Knife4j 5.4.0 接口文档
 - 调度：Spring `@Scheduled` + Cron
 - 第三方：Deepseek API（RestTemplate 调用 + 失败降级）
 - 构建：Maven（单模块）
@@ -29,7 +29,7 @@
 ## 功能模块
 
 ### 医生与科室
-- `POST /doctor/add`、`PUT /doctor/update`、`DELETE /doctor/delete/{id}`
+- `POST /doctor/add`、`PUT /doctor/update`、`DELETE /doctor/delete/{id}` —— 写接口带 `@Valid` 入参校验（姓名 / 职称必填，执业证号 15 位数字）
 - `GET /doctor/list` —— 带 Redis 三防缓存 + 延迟双删
 - `GET /doctor/countByDept` —— 科室在岗医生数统计
 
@@ -40,7 +40,7 @@
 ### 号源与挂号
 - `GET /source/list` —— 未来 7 天号源，带 Redis 三防缓存
 - `GET /reserve/token` —— 获取一次性防重令牌
-- `POST /reserve` —— 挂号：防重令牌校验 + 号源防超卖 + 写预约记录，整段包 `@Transactional`
+- `POST /reserve` —— 挂号：入参校验（手机号 11 位正则 + 必填项）→ 防重令牌校验 → 号源防超卖 → 写预约记录，整段包 `@Transactional`
 - `SourceTask` —— 定时任务扫描未来 7 天排班自动生成号源，重复号源由唯一索引拦截
 
 ### 基础能力
@@ -48,7 +48,22 @@
 - `POST /api/recommend` —— 智能科室推荐，Deepseek API 调用失败自动降级为「请前往导诊台」
 - `POST /upload` —— 图片上传，类型白名单 + UUID 重命名 + 路径配置化
 - `AuditLogAspect` —— AOP 操作审计，记录「谁在什么时间操作了什么」，基于 SLF4J，业务零侵入
-- `GlobalExceptionHandler` —— 统一异常处理，区分业务异常 / 参数校验 / 唯一键冲突 / 系统异常
+- `GlobalExceptionHandler` —— 统一异常处理，区分业务异常 / 参数校验 / 唯一键冲突 / 上传超限 / 系统异常
+
+## 参数校验设计
+
+所有写接口均做入参校验，非法参数在进入 Service 前被拦截，避免脏数据落到数据库：
+
+| 校验位置 | 写法 | 抛出的异常 | 兜底处理 |
+| --- | --- | --- | --- |
+| `@RequestBody` 对象（如新增医生） | 参数前加 `@Valid` | `MethodArgumentNotValidException` | 全局处理器取第一条字段提示，返回 4000 |
+| `@RequestParam` 平铺参数（如挂号） | **类上加 `@Validated`**，参数加 `@NotBlank` / `@Pattern` | `ConstraintViolationException` | 同上，返回 4000 |
+
+> 坑点记录：`@Valid` 只管 `@RequestBody` 对象，管不了平铺的 `@RequestParam`；平铺参数必须在**类上**加 `@Validated`（Spring 提供）才生效。
+
+业务规则校验：
+- 患者手机号 `^1[3-9]\d{9}$` —— 挂号关键联系方式，格式错误会导致回访失败
+- 执业证号 `^\d{15}$` —— 医疗规范 15 位数字，唯一性另由 `uk_license` 唯一索引保证
 
 ## 缓存设计（三防 + 一致性）
 
