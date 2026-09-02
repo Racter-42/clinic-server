@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS `clinic_dept` (
 -- 2. 医生表
 --    注意：license_no（执业证号）有唯一索引，重复插入会抛
 --    DuplicateKeyException → 全局异常处理转成 4001
---    avatar：医生头像访问 URL（/uploads/uuid.jpg），由知识点 5 图片上传写入
+--    avatar：医生头像访问 URL（/uploads/xxx.jpg），医生档案页直接拿它当图片地址
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `doctor` (
   `id` int NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS `doctor` (
 -- ---------------------------------------------------------------------
 -- 3. 排班表
 --    uk_doctor_shift 唯一索引：同一医生同一天同一班次只能排一次
---    （D11 排班冲突的"插入防重"防线）
+--    （排班冲突的"插入防重"防线）
 --    version 乐观锁版本号：预留（当前防重复走唯一索引）
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `schedule` (
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS `source` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='号源表';
 
 -- ---------------------------------------------------------------------
--- 5. 预约记录表（知识点 4B 新增）
+-- 5. 预约记录表
 --    uk_source_id 唯一索引：一个号源最多一条预约记录 ——
 --    乐观锁失效时的最后一道兜底防线
 -- ---------------------------------------------------------------------
@@ -96,3 +96,27 @@ CREATE TABLE IF NOT EXISTS `reserve_record` (
   -- 没这个索引就是全表扫描：5000 行数据实测 type=ALL 扫 5001 行，加上之后 type=ref 只扫 1 行
   KEY `idx_patient_phone` (`patient_phone`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='预约记录表';
+
+-- ---------------------------------------------------------------------
+-- 6. 操作审计日志表
+--    之前 AOP 只把操作打到日志文件里，日志文件一滚动、服务一重启，
+--    旧的审计记录就翻不回来了；医疗合规要求"谁在什么时候改了什么"随时能查
+--    success 记操作成败；error_msg 记失败原因（不记堆栈，太长且没必要）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `audit_log` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id` varchar(50) DEFAULT NULL COMMENT '操作人账号（登录接口的 userId，没登录是 anonymous）',
+  `operation` varchar(100) NOT NULL COMMENT '操作的接口：Controller.方法名',
+  `http_method` varchar(10) DEFAULT NULL COMMENT '请求方式 GET/POST/PUT/DELETE',
+  `uri` varchar(255) DEFAULT NULL COMMENT '请求路径',
+  `ip` varchar(50) DEFAULT NULL COMMENT '来访 IP',
+  `params` text COMMENT '请求参数（JSON 串，密码已打码，超长截断）',
+  `success` tinyint NOT NULL DEFAULT '1' COMMENT '1成功 0失败',
+  `error_msg` varchar(500) DEFAULT NULL COMMENT '失败原因（成功为 null）',
+  `cost_ms` int DEFAULT NULL COMMENT '接口耗时（毫秒）',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_operation` (`operation`),
+  KEY `idx_create_time` (`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作审计日志表';
