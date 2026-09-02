@@ -19,7 +19,7 @@ public interface SourceMapper {
             + "and shift_date < date_add(curdate(), interval 7 day)")  // 今天+7天之前
     List<Source> listFuture7Days();         // 返回未来 7 天的号源列表
 
-    // ========== 3. 号源扣减（乐观锁防超卖，D13 核心）==========
+    // ========== 3. 号源扣减（乐观锁：只更新"还空着"的号源）==========
     // 关键：把"判断"和"修改"压进一条 SQL，靠数据库的行锁保证原子性
     @Update("update source set status = 1 "
             + "where id = #{id} and status = 0")

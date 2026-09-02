@@ -46,7 +46,7 @@ public class DoctorController {
         return "成功";
     }
 
-    @Operation(summary = "统计科室在岗医生数")                    // ⭐ 新增
+    @Operation(summary = "统计科室在岗医生数")
     @GetMapping("/countByDept")
     public Result countByDept() {
         return Result.success(service.countByDept());

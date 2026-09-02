@@ -82,7 +82,7 @@ public class GlobalExceptionHandler {   // 全局保安：所有 Controller 抛�
      *    永远不把真实异常信息暴露给前端（防止泄露内部信息），统一返回 500 + 友好提示；
      *    真实异常通过 log.error("系统异常", e) 完整记录到日志，运维可查
      */
-    @ExceptionHandler(Exception.class)   // ⭐ Exception 是所有异常（除 Error 体系外）的爸爸
+    @ExceptionHandler(Exception.class)   // Exception 是所有异常（除 Error 体系外）的爸爸
     public Result<?> handleException(Exception e) {   // 返回 Result，Spring 自动转 JSON
         log.error("系统异常", e);        // 完整堆栈进日志文件（排查用），前端绝对不暴露
         return Result.error(500, "系统繁忙，请稍后再试");
