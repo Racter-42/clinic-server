@@ -5,6 +5,7 @@ import com.xiaoyu.clinic.pojo.Result;
 import com.xiaoyu.clinic.service.DoctorService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -26,14 +27,14 @@ public class DoctorController {
 
     @Operation(summary = "新增医生")
     @PostMapping("/add")
-    public String add(@RequestBody Doctor d) {
+    public String add(@Valid @RequestBody Doctor d) {   // @Valid 触发 Doctor 实体上的校验注解
         service.insert(d);
         return "成功";
     }
 
     @Operation(summary = "更新医生")
     @PutMapping("/update")
-    public String update(@RequestBody Doctor d) {
+    public String update(@Valid @RequestBody Doctor d) {
         service.update(d);
         return "成功";
     }

@@ -1,9 +1,20 @@
 package com.xiaoyu.clinic.pojo;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+
 public class Doctor {
     private Integer id;
+
+    @NotBlank(message = "医生姓名不能为空")
     private String name;
+
+    @NotBlank(message = "职称不能为空")
     private String title;
+
+    // 执业证号：医疗规范要求 15 位数字；唯一性由数据库 uk_license 唯一索引保证
+    @NotBlank(message = "执业证号不能为空")
+    @Pattern(regexp = "^\\d{15}$", message = "执业证号应为 15 位数字")
     private String licenseNo;
 
 
