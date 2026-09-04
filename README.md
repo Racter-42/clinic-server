@@ -87,8 +87,8 @@
 ### 1. 号源防超卖：三道防线
 
 ```
-第一道：Redis 防重令牌（SETNX）  → 拦住"同一个人重复点击"
-第二道：数据库 CAS 乐观锁        → 拦住"多个人抢同一个号"
+第一道：Redis 防重令牌（SETNX）  → 拦住「同一个人重复点击」
+第二道：数据库 CAS 乐观锁        → 拦住「多个人抢同一个号」
 第三道：uk_source_id 唯一索引    → 兜底，防止前两道都失效
 ```
 
@@ -125,6 +125,17 @@ Redis 的 `DEL` 是单线程原子操作，天然适合做「只能成功一次�
 
 > 实现细节：没抢到锁的线程不无限递归（防栈溢出），改为**最多轮询 3 轮、每轮 50ms**，超时则直接查库兜底——缓存只是加速，数据库才是权威。
 
+**Redis key 命名规范**（统一 `业务域:用途` 两段式，避免多模块 key 冲突）：
+
+| Key | 用途 | 过期 |
+| --- | --- | --- |
+| `doctor:list` | 医生列表缓存 | 30~32 分钟（含随机值） |
+| `source:list:future7days` | 未来 7 天号源缓存 | 30~32 分钟（含随机值） |
+| `lock:{key}` | 缓存击穿互斥锁 | 10 秒 |
+| `reserve:token:{uuid}` | 挂号防重令牌 | 10 分钟 |
+
+> 选用 `StringRedisTemplate` 而非 `RedisTemplate`：后者默认走 JDK 二进制序列化，存进去的数据在 `redis-cli` 里看是乱码，排查问题极不方便；前者存明文 JSON，可直接在命令行 `GET` 出来核对。
+
 ### 4. 排班防并发覆盖：version 乐观锁
 
 排班的「防重复」和「防覆盖」是两个独立的并发问题，用了两把不同的锁：
@@ -145,6 +156,37 @@ WHERE id = #{id} AND version = #{version}
 - 修改前先读出 `version`，提交时原样带回，数据库层校验版本一致性
 - 影响行数 = 1 更新成功；= 0 说明读取之后已被他人修改（version 对不上），`ScheduleService` 抛出「数据已被其他人修改，请刷新后重试」
 - 与号源防超卖的 CAS 是同一个思想：**把并发判断下沉到 UPDATE 的 WHERE 条件里，而不是先 SELECT 再判断**（先查后改存在并发窗口）
+
+### 5. 性能实测
+
+高频读接口（医生列表）加缓存前后的对比数据：
+
+| 场景 | 平均响应时间 | 说明 |
+| --- | --- | --- |
+| 直连 MySQL | **126ms** | 缓存为空时的首次请求，走完整查库 + 序列化链路 |
+| 命中 Redis | **6ms** | 后续请求直接读内存，省去磁盘 IO 与 SQL 解析 |
+
+**测试方法**：两次 10 次循环对比。
+
+```java
+// 第 1 次循环：第 1 次必然走 MySQL（缓存为空），后 9 次命中缓存
+long start = System.currentTimeMillis();
+for (int i = 0; i < 10; i++) {
+    restTemplate.exchange("http://localhost:8080/doctor/list", HttpMethod.GET, entity, String.class);
+}
+long end = System.currentTimeMillis();
+System.out.println("【走数据库】10 次平均: " + (end - start) / 10 + "ms");
+
+// 第 2 次循环：缓存已写满，10 次全部命中
+long start2 = System.currentTimeMillis();
+for (int i = 0; i < 10; i++) { /* 同上 */ }
+long end2 = System.currentTimeMillis();
+System.out.println("【走缓存】10 次平均: " + (end2 - start2) / 10 + "ms");
+```
+
+两次均值对比即可看出缓存优化的相对效果。
+
+> 说明：以上为本地开发环境单机实测数据，未做 JMeter 并发压测，主要用于验证缓存优化的相对效果。
 
 ---
 
@@ -200,7 +242,7 @@ audit_log       操作审计表    idx_user_id / idx_operation / idx_create_time
 ### 设计取舍说明
 
 - **重复排班 / 重复号源用唯一索引而非应用层判断**：应用层判断存在并发窗口（两个请求同时查到「不存在」然后都插入），唯一索引是数据库层面的物理拦截，绝对可靠。
-- **防重复与防覆盖是两个问题，用两把不同的锁**：重复插入由联合唯一索引 `uk_doctor_shift` 物理拦截（更简单、更可靠）；并发覆盖由 `version` 乐观锁解决——`UPDATE ... WHERE id=? AND version=?`，影响行数为 0 说明数据已被他人修改，抛业务异常让用户刷新重试。详见上方「并发与数据一致性设计」第 4 节。
+- **防重复与防覆盖是两件事**：重复插入交给唯一索引物理拦截（更简单可靠），并发覆盖交给 `version` 乐观锁（唯一索引管不了"改"）。详见上方第 4 节。
 
 ---
 
@@ -257,10 +299,16 @@ JDK 17+、MySQL 8、Redis、Maven
    mysql -uroot -p clinic < src/main/resources/sql/schema.sql
    ```
 
-3. 准备配置文件
+3. 准备配置文件：复制配置模板并改名为 `application.properties`
+
    ```bash
+   # macOS / Linux / Git Bash
    cp src/main/resources/application.properties.example src/main/resources/application.properties
+
+   # Windows CMD
+   copy src\main\resources\application.properties.example src\main\resources\application.properties
    ```
+
    填入自己的：数据库账号密码、Redis 地址、JWT 密钥、Deepseek API Key（**没有 Key 也能跑，导诊接口会自动降级**）
 
 4. 启动应用：`ClinicServerApplication`
