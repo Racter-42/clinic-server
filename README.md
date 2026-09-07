@@ -163,30 +163,27 @@ WHERE id = #{id} AND version = #{version}
 
 | 场景 | 平均响应时间 | 说明 |
 | --- | --- | --- |
-| 直连 MySQL | **126ms** | 缓存为空时的首次请求，走完整查库 + 序列化链路 |
-| 命中 Redis | **6ms** | 后续请求直接读内存，省去磁盘 IO 与 SQL 解析 |
+| 冷缓存（走 MySQL） | **126ms** | 早期测法的实测值，含 JVM 预热，口径见下方说明 |
+| 热缓存（命中 Redis） | **6ms** | 一次 Redis 读 + JSON 反序列化的量级，多次重跑稳定在个位数 |
 
-**测试方法**：两次 10 次循环对比。
+**测试类**：`src/test/java/com/xiaoyu/clinic/benchmark/CacheBenchmark.java`（带 `main` 方法，直接跑，不启动 Spring 容器）。
+
+**测法（已修正）**：
+
+1. 先预热 5 次（前几次请求含类加载、连接池初始化、JIT 编译，不计入结果）
+2. 冷缓存：**每轮先 `DEL doctor:list` 再打一次请求**，跑 10 轮取平均，保证每一轮都是真走 MySQL
+3. 热缓存：缓存已写好，连打 10 次取平均
 
 ```java
-// 第 1 次循环：第 1 次必然走 MySQL（缓存为空），后 9 次命中缓存
-long start = System.currentTimeMillis();
-for (int i = 0; i < 10; i++) {
-    restTemplate.exchange("http://localhost:8080/doctor/list", HttpMethod.GET, entity, String.class);
+long[] cold = new long[ROUNDS];
+for (int i = 0; i < ROUNDS; i++) {
+    redis.delete(CACHE_KEY);          // 每轮都删；只在开头删一次的话，后几轮全命中缓存，均值是假的
+    cold[i] = oneRequest(restTemplate, entity);
 }
-long end = System.currentTimeMillis();
-System.out.println("【走数据库】10 次平均: " + (end - start) / 10 + "ms");
-
-// 第 2 次循环：缓存已写满，10 次全部命中
-long start2 = System.currentTimeMillis();
-for (int i = 0; i < 10; i++) { /* 同上 */ }
-long end2 = System.currentTimeMillis();
-System.out.println("【走缓存】10 次平均: " + (end2 - start2) / 10 + "ms");
 ```
 
-两次均值对比即可看出缓存优化的相对效果。
-
-> 说明：以上为本地开发环境单机实测数据，未做 JMeter 并发压测，主要用于验证缓存优化的相对效果。
+> **口径说明**：126ms 是**端到端**耗时（HTTP + Controller + JSON 序列化 + SQL），不是 SQL 本身的耗时。而且它来自早期测法——当时只在开头清一次缓存，同一轮里后 9 次其实命中了缓存，首轮又混着 JVM 预热，所以数值偏高。**这两个数只能定性说明「缓存生效、方向正确」，不是压测结果。**
+> 严谨的压测需要：固定并发（如 JMeter 50 并发）+ 预热后采样 + 上千样本 + 看 P95/P99 分位数与错误率。本项目未做 JMeter 并发压测。
 
 ---
 
@@ -314,6 +311,26 @@ JDK 17+、MySQL 8、Redis、Maven
 4. 启动应用：`ClinicServerApplication`
 
 5. 验证：打开 `http://localhost:8080/doc.html` 查看 Knife4j 接口文档，可直接在页面上调试
+
+### Docker 部署（可选）
+
+```bash
+# 1. 先打 jar
+mvn clean package -DskipTests
+
+# 2. 构建镜像
+docker build -t clinic-server:0.0.1 .
+
+# 3. 运行：MySQL / Redis 仍用宿主机上的实例，容器内用 host.docker.internal 访问
+docker run -p 8080:8080 \
+  -e SPRING_DATASOURCE_URL="jdbc:mysql://host.docker.internal:3306/clinic?serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true" \
+  -e SPRING_DATASOURCE_USERNAME=root \
+  -e SPRING_DATASOURCE_PASSWORD=你的密码 \
+  -e SPRING_REDIS_HOST=host.docker.internal \
+  clinic-server:0.0.1
+```
+
+> `Dockerfile` 只有 4 行：基于 JRE 17 镜像，把打好的 jar 拷进去，`java -jar` 启动。MySQL 和 Redis 没有一起容器化，仍然连宿主机的实例——这一步只做到「把应用本身跑进容器」。
 
 ### 快速验证主流程
 
