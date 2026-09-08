@@ -312,7 +312,7 @@ JDK 17+、MySQL 8、Redis、Maven
    copy src\main\resources\application.properties.example src\main\resources\application.properties
    ```
 
-   填入自己的：数据库账号密码（必填）、Deepseek API Key（可选，**没有 Key 也能跑，导诊接口会自动降级**）。Redis 默认连本机 `6379`，无需额外配置
+   填入自己的：数据库账号密码（必填）、JWT 签名密钥（`jwt.secret`，模板里有生成方式）、Deepseek API Key（可选，**没有 Key 也能跑，导诊接口会自动降级**）。Redis 默认连本机 `6379`，无需额外配置
 
 4. 启动应用：`ClinicServerApplication`
 

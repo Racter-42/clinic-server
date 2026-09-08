@@ -10,15 +10,25 @@ import java.util.Date;
 public class JwtUtils {
 
 
-    // 注意：必须 >= 32 个字符（算法要求密钥至少 256 位 = 32 字节）
-    private static final String SECRET = "clinic-server-secret-key-2026-change-me-123456";
+    // 签名密钥：不写死在代码里，启动时由 JwtConfig 从配置项 jwt.secret 注入
+    // （application.properties 已被 .gitignore 忽略，密钥不会进公开仓库）
+    private static String secret;
+
+    // 注入入口（JwtConfig 在应用启动时调用）：顺手校验密钥长度，防配错
+    public static void setSecret(String s) {
+        // 算法要求密钥至少 256 位 = 32 字节，短了 HS256 签名会直接抛异常
+        if (s == null || s.getBytes(StandardCharsets.UTF_8).length < 32) {
+            throw new IllegalStateException("jwt.secret 未配置或长度不足 32 字节，请检查 application.properties");
+        }
+        secret = s;
+    }
 
     // 有效期：24 小时，单位毫秒（1秒=1000毫秒），末尾 L 表示 long 类型
     private static final long EXPIRE = 24 * 60 * 60 * 1000L;
 
     // ========== 1. 生成 token（登录成功后调用） ==========
     public static String generateToken(String username, String role) {
-        SecretKey key = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
+        SecretKey key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         // 上面这行：把字符串密钥转成签名算法认识的 SecretKey 对象（这里不需要深究，理解"转格式"即可）
 
         return Jwts.builder()                              // 开始组装 token
@@ -32,7 +42,7 @@ public class JwtUtils {
 
     // ========== 2. 解析 token（拦截器校验时调用） ==========
     public static Claims parseToken(String token) {
-        SecretKey key = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
+        SecretKey key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
 
         return Jwts.parser()                               // 创建解析器
                 .verifyWith(key)                           // 拿同一个密钥验章：签名对不对？

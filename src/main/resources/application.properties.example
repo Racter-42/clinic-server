@@ -32,3 +32,11 @@ deepseek.api-url=https://api.deepseek.com/chat/completions
 # 连接超时/读取超时（毫秒）：对方 3 秒连不上或 5 秒不回话就放弃，防止请求一直挂着占线程
 deepseek.connect-timeout=3000
 deepseek.read-timeout=5000
+
+# ============================================
+# JWT 签名密钥（用于签发/校验登录令牌）
+# 生成方式：openssl rand -hex 32（任意 >=32 字节的随机串即可）
+# ⚠️ 本文件是公开模板，绝不能写真实密钥！
+#    真实密钥只写在 application.properties（已被 gitignore 忽略）
+# ============================================
+jwt.secret=你的JWT签名密钥（>=32字节随机串，用 openssl rand -hex 32 生成）
