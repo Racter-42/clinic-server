@@ -14,7 +14,7 @@
 | 接口性能 | 高频读接口热缓存约 12ms / 冷缓存 13-21ms（单并发冒烟实测，测试代码在仓库可复现） | `DoctorService` / `SourceService` |
 | 并发安全 | 号源防超卖三道防线：状态位条件 UPDATE（CAS）+ `uk_source_id` 唯一索引物理兜底 + Redis 防重令牌，层层拦截 | `ReserveService` |
 | 缓存可靠性 | 缓存三防（穿透 / 击穿 / 雪崩）+ 延迟双删保证一致性 | `DoctorService` / `SourceService` |
-| 查询优化 | 手机号查询加索引后 `EXPLAIN` 由 `type=ALL` 扫 5001 行 → `type=ref` 扫 1 行 | `reserve_record.idx_patient_phone` |
+| 查询优化 | 按手机号查预约记录接口（导诊台）落在 `idx_patient_phone` 上，`EXPLAIN` 由 `type=ALL` 扫 5000+ 行 → `type=ref` 扫 1 行 | `ReserveRecordMapper` / `reserve_record.idx_patient_phone` |
 | 第三方容错 | Deepseek 智能导诊：超时控制 + 失败重试 + 降级兜底，AI 挂了不影响挂号主流程 | `DeepseekService` |
 
 ---
@@ -76,6 +76,7 @@
 | GET | `/source/list` | 未来 7 天号源（**Redis 三防缓存**） | ✅ |
 | GET | `/reserve/token` | 获取一次性防重令牌（10 分钟有效） | ✅ |
 | POST | `/reserve` | 挂号：参数校验 → 防重令牌 → **防超卖** → 写预约记录 | ✅ |
+| GET | `/reserve/list` | 按手机号查预约记录（导诊台，走 `idx_patient_phone`） | ✅ |
 | POST | `/api/recommend` | 智能科室推荐（Deepseek + 失败降级） | ✅ |
 | POST | `/upload` | 图片上传（类型白名单 + UUID 重命名） | ✅ |
 
@@ -232,12 +233,14 @@ audit_log       操作审计表    idx_user_id / idx_operation / idx_create_time
 
 ### 索引优化实测
 
-`idx_patient_phone` 为按手机号查预约记录场景所加（导诊台高频操作）。5000 行数据实测：
+`idx_patient_phone` 为按手机号查预约记录场景所加（导诊台高频操作），对应接口 **`GET /reserve/list?phone=`**：预约记录表只存 `source_id`，查询 LEFT JOIN 号源表、医生表带出医生姓名与排班日期时段，`WHERE patient_phone = ?` 命中该索引。5000+ 行数据实测：
 
 | | 优化前 | 优化后 |
 | --- | --- | --- |
 | `EXPLAIN type` | `ALL`（全表扫描） | `ref`（索引命中） |
-| 扫描行数 | 5001 | 1 |
+| 扫描行数 | 5000+ | 1 |
+
+三表 EXPLAIN 实测：`reserve_record` 走 `idx_patient_phone`（ref，rows=1），`source`、`doctor` 走主键（eq_ref，rows=1），联表不产生额外扫描。
 
 ### 设计取舍说明
 

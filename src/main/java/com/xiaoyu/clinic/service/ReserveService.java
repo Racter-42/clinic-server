@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -92,5 +93,17 @@ public class ReserveService {
                 redisTemplate.delete("source:list:future7days");
             }
         });
+    }
+
+    /**
+     * 按患者手机号查预约记录（导诊台：一位患者约过哪些号）
+     *
+     * 为什么不做缓存？
+     *  预约记录按"个人 + 时间"变化，命中率低、还要维护失效，划不来；
+     *  一次只查该患者的几条记录，走 idx_patient_phone 索引就是单行命中，直接查库够快。
+     *  纯查询方法，不涉及写操作，不需要 @Transactional。
+     */
+    public List<ReserveRecord> findByPatientPhone(String phone) {
+        return reserveRecordMapper.findByPatientPhone(phone);
     }
 }

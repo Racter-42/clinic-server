@@ -63,4 +63,16 @@ public class ReserveController {
 
         return Result.success("预约成功");
     }
+
+    // ========== 3. 按手机号查预约记录（导诊台：这位患者约过哪些号） ==========
+    // 导诊台按手机号定位患者，要看到"约了哪个医生、哪天、哪个时段"，
+    // 返回的每条记录带 doctorName / shiftDate / timeSlot（JOIN 带出来的）。
+    // where patient_phone = ? 走 idx_patient_phone 索引，不会全表扫描。
+    @Operation(summary = "按手机号查询预约记录（导诊台）")
+    @GetMapping("/list")
+    public Result listByPhone(@NotBlank(message = "患者手机号不能为空")
+                              @Pattern(regexp = "^1[3-9]\\d{9}$", message = "手机号格式不正确")
+                              @RequestParam String phone) {
+        return Result.success(reserveService.findByPatientPhone(phone));
+    }
 }

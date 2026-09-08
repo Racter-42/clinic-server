@@ -12,6 +12,9 @@ public class ReserveRecord {
     private String  patientPhone;   // 患者手机号
     private Integer status;         // 1已预约 2已取消
     private String  createTime;     // 预约时间（插入时不用管，MySQL 自动填当前时间）
+    private String  doctorName;     // 医生姓名（按手机号查询时 LEFT JOIN doctor 带出来的，页面直接显示用）
+    private String  shiftDate;      // 号源排班日期（JOIN source 带出来）
+    private String  timeSlot;       // 号源时段（JOIN source 带出来）
 
 
     public Integer getId() {
@@ -54,5 +57,26 @@ public class ReserveRecord {
     }
     public void setCreateTime(String createTime) {
         this.createTime = createTime;
+    }
+
+    public String getDoctorName() {
+        return doctorName;
+    }
+    public void setDoctorName(String doctorName) {
+        this.doctorName = doctorName;
+    }
+
+    public String getShiftDate() {
+        return shiftDate;
+    }
+    public void setShiftDate(String shiftDate) {
+        this.shiftDate = shiftDate;
+    }
+
+    public String getTimeSlot() {
+        return timeSlot;
+    }
+    public void setTimeSlot(String timeSlot) {
+        this.timeSlot = timeSlot;
     }
 }
