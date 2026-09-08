@@ -11,7 +11,7 @@
 
 | 维度 | 成果 | 落地位置 |
 | --- | --- | --- |
-| 接口性能 | 高频读接口实测：热缓存 ~12ms / 冷缓存 13~21ms（10 轮取平均，冒烟对比非压测，测试代码在仓库可复现） | `DoctorService` / `SourceService` |
+| 接口性能 | 高频读接口热缓存约 12ms / 冷缓存 13-21ms（单并发冒烟实测，测试代码在仓库可复现） | `DoctorService` / `SourceService` |
 | 并发安全 | 号源防超卖三道防线：状态位条件 UPDATE（CAS）+ `uk_source_id` 唯一索引物理兜底 + Redis 防重令牌，层层拦截 | `ReserveService` |
 | 缓存可靠性 | 缓存三防（穿透 / 击穿 / 雪崩）+ 延迟双删保证一致性 | `DoctorService` / `SourceService` |
 | 查询优化 | 手机号查询加索引后 `EXPLAIN` 由 `type=ALL` 扫 5001 行 → `type=ref` 扫 1 行 | `reserve_record.idx_patient_phone` |
@@ -133,8 +133,8 @@ Redis 的 `DEL` 是单线程原子操作，天然适合做「只能成功一次�
 
 | Key | 用途 | 过期 |
 | --- | --- | --- |
-| `doctor:list` | 医生列表缓存 | 30~32 分钟（含随机值） |
-| `source:list:future7days` | 未来 7 天号源缓存 | 30~32 分钟（含随机值） |
+| `doctor:list` | 医生列表缓存 | 30-32 分钟（含随机值） |
+| `source:list:future7days` | 未来 7 天号源缓存 | 30-32 分钟（含随机值） |
 | `lock:{key}` | 缓存击穿互斥锁 | 10 秒 |
 | `reserve:token:{uuid}` | 挂号防重令牌 | 10 分钟 |
 
@@ -167,8 +167,8 @@ WHERE id = #{id} AND version = #{version}
 
 | 场景 | 平均 | 最快 | 最慢 | 说明 |
 | --- | --- | --- | --- | --- |
-| 冷缓存（每轮 `DEL` 后真走 MySQL） | 13~21ms | 10ms | 38ms | 两轮样本均值漂移，受 JVM / GC 影响 |
-| 热缓存（命中 Redis） | 12~13ms | 8ms | 29ms | Redis 读 + JSON 反序列化 |
+| 冷缓存（每轮 `DEL` 后真走 MySQL） | 13-21ms | 10ms | 38ms | 两轮样本均值漂移，受 JVM / GC 影响 |
+| 热缓存（命中 Redis） | 12-13ms | 8ms | 29ms | Redis 读 + JSON 反序列化 |
 
 **测试类**：`src/test/java/com/xiaoyu/clinic/benchmark/CacheBenchmark.java`（带 `main` 方法，直接跑，不启动 Spring 容器）。
 
@@ -186,8 +186,7 @@ for (int i = 0; i < ROUNDS; i++) {
 }
 ```
 
-> **口径说明**：这是**端到端**耗时（HTTP + Controller + 序列化 + SQL/Redis），不是 SQL 本身耗时。单并发下本机 MySQL 查 11 行本身就很快，所以冷热差距不明显——**这个测试只证明「缓存链路生效且测法干净」，不是压测**。
-> 缓存的真正价值体现在高并发：同一时刻 N 个请求读 Redis，远好于 N 个请求挤 MySQL（读放大 + 连接池争用）。严谨验证需要 JMeter 固定并发（如 50）+ 预热后采样 + 上千样本 + 看 P95/P99 分位数与错误率。本项目未做 JMeter 并发压测。
+> 注：耗时为端到端（HTTP + Controller + 序列化 + SQL/Redis）。单并发下本机 MySQL 本身极快，冷热差距不能代表高并发场景的收益；本项目未做并发压测。
 
 ---
 
