@@ -11,8 +11,8 @@
 
 | 维度 | 成果 | 落地位置 |
 | --- | --- | --- |
-| 接口性能 | 高频读接口响应时间 **126ms → 6ms**（本地实测，10 次取平均） | `DoctorService` / `SourceService` |
-| 并发安全 | 号源防超卖三道防线：数据库 CAS + 唯一索引 + Redis 防重令牌，实测并发下零超卖 | `ReserveService` |
+| 接口性能 | 高频读接口实测：热缓存 ~12ms / 冷缓存 13~21ms（10 轮取平均，冒烟对比非压测，测试代码在仓库可复现） | `DoctorService` / `SourceService` |
+| 并发安全 | 号源防超卖三道防线：状态位条件 UPDATE（CAS）+ `uk_source_id` 唯一索引物理兜底 + Redis 防重令牌，层层拦截 | `ReserveService` |
 | 缓存可靠性 | 缓存三防（穿透 / 击穿 / 雪崩）+ 延迟双删保证一致性 | `DoctorService` / `SourceService` |
 | 查询优化 | 手机号查询加索引后 `EXPLAIN` 由 `type=ALL` 扫 5001 行 → `type=ref` 扫 1 行 | `reserve_record.idx_patient_phone` |
 | 第三方容错 | Deepseek 智能导诊：超时控制 + 失败重试 + 降级兜底，AI 挂了不影响挂号主流程 | `DeepseekService` |
@@ -53,6 +53,7 @@
 | JSON | fastjson2 2.0.53 | 缓存序列化 |
 | 第三方 | Deepseek API | RestTemplate 调用 + 降级 |
 | 构建 | Maven | 单模块 |
+| 部署 | Docker | 单容器运行 jar（WSL2 后端实测通过），MySQL / Redis 仍用宿主机实例 |
 
 ---
 
@@ -121,7 +122,10 @@ Redis 的 `DEL` 是单线程原子操作，天然适合做「只能成功一次�
 | 穿透 | 查不存在的数据，每次都打数据库 | 空结果也写 `EMPTY` 占位，**2 分钟短过期** |
 | 击穿 | 单个热点 key 过期瞬间大量请求涌入 | `setIfAbsent` 互斥锁，只放 1 个线程回源 + 双重检查 + `finally` 释放锁 |
 | 雪崩 | 大批 key 同时过期 | 过期时间加随机值 `30 + ThreadLocalRandom.nextInt(3)` 分钟 |
-| 一致性 | 更新数据后缓存是旧值 | 延迟双删：先删缓存 → 更新数据库 → 延迟 500ms 再删一次 |
+| 一致性（低频写） | 医生资料更新后列表缓存是旧值 | 延迟双删：先删缓存 → 更新数据库 → 延迟 500ms 再删一次（`DoctorService#update`） |
+| 一致性（高频写） | 预约成功后号源缓存仍显示「可约」 | `afterCommit` 回调：注册事务提交成功后再删缓存（`ReserveService`） |
+
+> 删缓存的两个场景是分开的：医生更新写频率低，用「先删 → 更新 → 延迟再删」的延迟双删；预约是高频写 + 立刻有人读，删早了会读到旧值回填，所以卡在 `TransactionSynchronization.afterCommit`，事务真正提交后才删。
 
 > 实现细节：没抢到锁的线程不无限递归（防栈溢出），改为**最多轮询 3 轮、每轮 50ms**，超时则直接查库兜底——缓存只是加速，数据库才是权威。
 
@@ -159,16 +163,16 @@ WHERE id = #{id} AND version = #{version}
 
 ### 5. 性能实测
 
-高频读接口（医生列表）加缓存前后的对比数据：
+高频读接口（医生列表）冷热缓存对比，本机冒烟实测（2026-09-08，单并发，10 轮取平均）：
 
-| 场景 | 平均响应时间 | 说明 |
-| --- | --- | --- |
-| 冷缓存（走 MySQL） | **126ms** | 早期测法的实测值，含 JVM 预热，口径见下方说明 |
-| 热缓存（命中 Redis） | **6ms** | 一次 Redis 读 + JSON 反序列化的量级，多次重跑稳定在个位数 |
+| 场景 | 平均 | 最快 | 最慢 | 说明 |
+| --- | --- | --- | --- | --- |
+| 冷缓存（每轮 `DEL` 后真走 MySQL） | 13~21ms | 10ms | 38ms | 两轮样本均值漂移，受 JVM / GC 影响 |
+| 热缓存（命中 Redis） | 12~13ms | 8ms | 29ms | Redis 读 + JSON 反序列化 |
 
 **测试类**：`src/test/java/com/xiaoyu/clinic/benchmark/CacheBenchmark.java`（带 `main` 方法，直接跑，不启动 Spring 容器）。
 
-**测法（已修正）**：
+**测法**：
 
 1. 先预热 5 次（前几次请求含类加载、连接池初始化、JIT 编译，不计入结果）
 2. 冷缓存：**每轮先 `DEL doctor:list` 再打一次请求**，跑 10 轮取平均，保证每一轮都是真走 MySQL
@@ -182,8 +186,8 @@ for (int i = 0; i < ROUNDS; i++) {
 }
 ```
 
-> **口径说明**：126ms 是**端到端**耗时（HTTP + Controller + JSON 序列化 + SQL），不是 SQL 本身的耗时。而且它来自早期测法——当时只在开头清一次缓存，同一轮里后 9 次其实命中了缓存，首轮又混着 JVM 预热，所以数值偏高。**这两个数只能定性说明「缓存生效、方向正确」，不是压测结果。**
-> 严谨的压测需要：固定并发（如 JMeter 50 并发）+ 预热后采样 + 上千样本 + 看 P95/P99 分位数与错误率。本项目未做 JMeter 并发压测。
+> **口径说明**：这是**端到端**耗时（HTTP + Controller + 序列化 + SQL/Redis），不是 SQL 本身耗时。单并发下本机 MySQL 查 11 行本身就很快，所以冷热差距不明显——**这个测试只证明「缓存链路生效且测法干净」，不是压测**。
+> 缓存的真正价值体现在高并发：同一时刻 N 个请求读 Redis，远好于 N 个请求挤 MySQL（读放大 + 连接池争用）。严谨验证需要 JMeter 固定并发（如 50）+ 预热后采样 + 上千样本 + 看 P95/P99 分位数与错误率。本项目未做 JMeter 并发压测。
 
 ---
 
@@ -272,6 +276,8 @@ src/main/java/com/xiaoyu/clinic
 ├── task            # 号源生成定时任务
 ├── utils           # JWT 工具类
 └── ClinicServerApplication
+
+另有 `src/test/java/com/xiaoyu/clinic/benchmark/CacheBenchmark.java`：缓存冷热性能对比（带 `main` 方法，需先启动应用再运行）。
 ```
 
 分层约定：**Controller 只做参数校验与转发，业务逻辑与事务一律下沉 Service**（事务放 Controller 会出现「异常已抛出但部分 SQL 已执行」的风险）。
@@ -306,31 +312,40 @@ JDK 17+、MySQL 8、Redis、Maven
    copy src\main\resources\application.properties.example src\main\resources\application.properties
    ```
 
-   填入自己的：数据库账号密码、Redis 地址、JWT 密钥、Deepseek API Key（**没有 Key 也能跑，导诊接口会自动降级**）
+   填入自己的：数据库账号密码（必填）、Deepseek API Key（可选，**没有 Key 也能跑，导诊接口会自动降级**）。Redis 默认连本机 `6379`，无需额外配置
 
 4. 启动应用：`ClinicServerApplication`
 
 5. 验证：打开 `http://localhost:8080/doc.html` 查看 Knife4j 接口文档，可直接在页面上调试
 
-### Docker 部署（可选）
+### Docker 部署（可选，Windows WSL2 实测通过）
+
+在 Windows 11（WSL2 后端）+ Docker Desktop 上验证通过：把 jar 跑进容器，MySQL / Redis 仍用宿主机实例。
 
 ```bash
-# 1. 先打 jar
-mvn clean package -DskipTests
+# 1. 打 jar（仓库自带 Maven Wrapper，无需本机装 Maven；Windows 下用 mvnw.cmd）
+./mvnw clean package -DskipTests
 
 # 2. 构建镜像
-docker build -t clinic-server:0.0.1 .
+docker build -t clinic-server .
 
-# 3. 运行：MySQL / Redis 仍用宿主机上的实例，容器内用 host.docker.internal 访问
-docker run -p 8080:8080 \
-  -e SPRING_DATASOURCE_URL="jdbc:mysql://host.docker.internal:3306/clinic?serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true" \
-  -e SPRING_DATASOURCE_USERNAME=root \
-  -e SPRING_DATASOURCE_PASSWORD=你的密码 \
-  -e SPRING_REDIS_HOST=host.docker.internal \
-  clinic-server:0.0.1
+# 3. 后台运行：容器内 localhost 是容器自己，连宿主机的 MySQL / Redis 要用 host.docker.internal
+docker run -d --name clinic-server -p 8080:8080 \
+  -e "SPRING_DATASOURCE_URL=jdbc:mysql://host.docker.internal:3306/clinic?serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true" \
+  -e "SPRING_DATASOURCE_USERNAME=root" \
+  -e "SPRING_DATASOURCE_PASSWORD=你的密码" \
+  -e "SPRING_DATA_REDIS_HOST=host.docker.internal" \
+  clinic-server
+
+# 4. 验证
+docker ps                      # STATUS 应为 Up
+docker logs clinic-server      # 看到 Started ClinicServerApplication = 启动成功
+curl http://localhost:8080/doctor/list    # 返回 401 = 服务正常（该接口需登录）
 ```
 
-> `Dockerfile` 只有 4 行：基于 JRE 17 镜像，把打好的 jar 拷进去，`java -jar` 启动。MySQL 和 Redis 没有一起容器化，仍然连宿主机的实例——这一步只做到「把应用本身跑进容器」。
+> `Dockerfile` 只有 4 行：`FROM eclipse-temurin:17-jre` → `COPY target/clinic-server-0.0.1-SNAPSHOT.jar app.jar` → `EXPOSE 8080` → `ENTRYPOINT ["java", "-jar", "/app.jar"]`。MySQL / Redis 没有一起容器化，这一步只做到「把应用本身跑进容器」。
+> 停止与重启：`docker stop clinic-server` / `docker start clinic-server`。
+> ⚠️ 镜像里打包的是 `application.properties` 的真实配置（含本地数据库密码），**这个镜像和容器不要 push 到任何公共仓库**。
 
 ### 快速验证主流程
 
@@ -379,3 +394,4 @@ curl -X POST "http://localhost:8080/reserve?token=<上一步的token>&sourceId=1
 - [ ] 预约记录取消与号源回滚（当前仅支持预约，取消流程待补）
 - [ ] 审计日志接入消息队列异步落库，进一步降低主流程耗时
 - [ ] 登录鉴权接入 Spring Security，支持角色区分（管理员 / 导诊台）
+- [ ] MySQL / Redis 一并容器化，用 docker-compose 编排一键启动（当前仅应用本身容器化）
