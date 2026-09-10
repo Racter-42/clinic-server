@@ -16,6 +16,7 @@
 | 缓存可靠性 | 缓存三防（穿透 / 击穿 / 雪崩）+ 延迟双删保证一致性 | `DoctorService` / `SourceService` |
 | 查询优化 | 按手机号查预约记录接口（导诊台）落在 `idx_patient_phone` 上，`EXPLAIN` 由 `type=ALL` 扫 5000+ 行 → `type=ref` 扫 1 行 | `ReserveRecordMapper` / `reserve_record.idx_patient_phone` |
 | 第三方容错 | Deepseek 智能导诊：超时控制 + 失败重试 + 降级兜底，AI 挂了不影响挂号主流程 | `DeepseekService` |
+| AI 工程化 | Agent 版导诊走 Function Calling：模型先调工具查真实科室与排班，再据此作答，从源头避免「凭症状编造科室」 | `AgentToolRegistry` / `DeepseekService` |
 
 ---
 
@@ -51,7 +52,7 @@
 | 接口文档 | Knife4j 5.4.0 | `/doc.html` |
 | 调度 | Spring `@Scheduled` | Cron 表达式 |
 | JSON | fastjson2 2.0.53 | 缓存序列化 |
-| 第三方 | Deepseek API | RestTemplate 调用 + 降级 |
+| 第三方 | Deepseek API | RestTemplate 调用 + Function Calling 工具调用 + 降级兜底 |
 | 构建 | Maven | 单模块 |
 | 部署 | Docker | 单容器运行 jar（WSL2 后端实测通过），MySQL / Redis 仍用宿主机实例 |
 
@@ -78,6 +79,7 @@
 | POST | `/reserve` | 挂号：参数校验 → 防重令牌 → **防超卖** → 写预约记录 | ✅ |
 | GET | `/reserve/list` | 按手机号查预约记录（导诊台，走 `idx_patient_phone`） | ✅ |
 | POST | `/api/recommend` | 智能科室推荐（Deepseek + 失败降级） | ✅ |
+| POST | `/api/agent/recommend` | Agent 版导诊（**Function Calling**：模型先调工具查真实科室 / 排班，再据此作答） | ✅ |
 | POST | `/upload` | 图片上传（类型白名单 + UUID 重命名） | ✅ |
 
 白名单（无需登录）：`/login`、`/uploads/**`、`/doc.html`、`/swagger-ui/**`、`/v3/api-docs/**`、`/webjars/**`、`/knife4j/**`
@@ -220,7 +222,7 @@ for (int i = 0; i < ROUNDS; i++) {
 
 ## 数据库设计
 
-**6 张表**，按依赖顺序：科室 → 医生 → 排班 → 号源 → 预约记录 → 操作审计。建表脚本见 `src/main/resources/sql/schema.sql`，全部字段带中文注释。
+**6 张表**，按依赖顺序：科室 → 医生 → 排班 → 号源 → 预约记录 → 操作审计。建表脚本见 `src/main/resources/sql/schema.sql`，测试数据脚本见 `src/main/resources/sql/data.sql`，全部字段带中文注释。
 
 ```
 clinic_dept     科室表
@@ -261,6 +263,28 @@ Deepseek 智能导诊是外部依赖，设计上保证「**AI 挂了不影响挂
 | 响应体为空 / AI 返回空串 | 统一降级 |
 | **最终兜底** | 返回固定文案「系统繁忙，请前往导诊台咨询」 |
 
+### Agent 版导诊：工具调用循环
+
+`POST /api/agent/recommend` 与 `/api/recommend` 的区别在于：后者让模型直接凭症状作答，前者**让模型先查真实数据再作答**。
+
+```
+system 人设 + 患者症状
+   ↓
+第 1 轮：带 tools 发请求 → finish_reason=tool_calls（模型点了 getDeptStats）
+   ↓  本地执行工具，把 assistant 消息 + role=tool 的结果追加进 messages
+第 2 轮：再发请求 → 模型可能继续点 getScheduleByDept
+   ↓  ...
+第 3 轮（上限）：finish_reason=stop → 拿到最终回答
+```
+
+| 设计点 | 做法 | 原因 |
+| --- | --- | --- |
+| 轮次上限 | 最多 3 轮 | 本项目最多点两次工具（查科室 → 查排班），第 3 轮该出结论；不设上限的话模型可能反复点菜，请求一直占着 Tomcat 线程 |
+| 出口判定 | `stop` 返回答案 / `tool_calls` 执行后继续 / 其余值一律降级 | 只认明确信号，`length`、`content_filter` 这类状态当失败处理 |
+| 工具执行失败 | 注册器内部捕获后返回错误文本 | 异常不能冲出循环，否则整个导诊接口 500 —— AI 的局部问题不该拖垮接口 |
+| 参数取值 | 先转 `Number` 再取 `int` | 模型偶尔把整数写成 `1.0`，直接强转 `(Integer)` 会抛 `ClassCastException` |
+| 工具来源 | 两个工具分别包装 `doctorService.countByDept` 与 `scheduleService.queryByDept` | 复用已有查询能力，不为 AI 单开一套查询逻辑 |
+
 ---
 
 ## 目录结构
@@ -268,7 +292,7 @@ Deepseek 智能导诊是外部依赖，设计上保证「**AI 挂了不影响挂
 ```
 src/main/java/com/xiaoyu/clinic
 ├── controller      # 接口层：参数接收与校验，不含业务逻辑
-├── service         # 业务逻辑层：事务边界、缓存三防、第三方调用
+├── service         # 业务逻辑层：事务边界、缓存三防、第三方调用、AI 工具注册与分发
 ├── mapper          # MyBatis 数据访问层（注解方式）
 ├── pojo            # 实体 / DTO / 统一响应 Result
 ├── config          # 拦截器注册、静态资源映射
@@ -304,7 +328,15 @@ JDK 17+、MySQL 8、Redis、Maven
    mysql -uroot -p clinic < src/main/resources/sql/schema.sql
    ```
 
-3. 准备配置文件：复制配置模板并改名为 `application.properties`
+3. 灌入测试数据（可选，建议执行——否则接口和页面看到的都是空表）
+   ```bash
+   mysql -uroot -p clinic < src/main/resources/sql/data.sql
+   ```
+   生成 12 个科室、32 名医生、未来 14 天排班与 7 天号源，并给部分号源配上患者信息。
+   脚本可重复执行，靠唯一索引与 `INSERT IGNORE` 保证幂等，重复跑不会产生重复数据。
+   排班窗口比号源宽是刻意的：排班由管理员提前排定，号源则由定时任务每天滚动发布未来 7 天。
+
+4. 准备配置文件：复制配置模板并改名为 `application.properties`
 
    ```bash
    # macOS / Linux / Git Bash
@@ -316,9 +348,9 @@ JDK 17+、MySQL 8、Redis、Maven
 
    填入自己的：数据库账号密码（必填）、JWT 签名密钥（`jwt.secret`，模板里有生成方式）、Deepseek API Key（可选，**没有 Key 也能跑，导诊接口会自动降级**）。Redis 默认连本机 `6379`，无需额外配置
 
-4. 启动应用：`ClinicServerApplication`
+5. 启动应用：`ClinicServerApplication`
 
-5. 验证：打开 `http://localhost:8080/doc.html` 查看 Knife4j 接口文档，可直接在页面上调试
+6. 验证：打开 `http://localhost:8080/doc.html` 查看 Knife4j 接口文档，可直接在页面上调试
 
 ### Docker 部署（可选，Windows WSL2 实测通过）
 
@@ -380,6 +412,7 @@ curl -X POST "http://localhost:8080/reserve?token=<上一步的token>&sourceId=1
 | 静态资源映射路径缺尾斜杠 | 图片访问 404 | location 结尾补 `/`，并加 `file:` 前缀 |
 | 平铺参数 `@Valid` 不生效 | 校验注解写了但没拦截 | 改为类上加 `@Validated` |
 | 缓存互斥锁递归重试 | 高并发下有栈溢出风险 | 改为有限轮询 3 轮 + 查库兜底 |
+| Boot 4 的 Jackson 版本冲突 | `ObjectMapper` 按 Jackson 2 包名注入，编译能过但启动报「找不到对应 bean」 | 项目是 Boot 4.1.1，容器注册的是 Jackson 3（`tools.jackson`）；classpath 上另有 jjwt 传递带入的 Jackson 2，两套共存。改用 `tools.jackson.databind.ObjectMapper` |
 
 ---
 
