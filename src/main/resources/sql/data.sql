@@ -14,6 +14,13 @@
 --   科室/医生用 INSERT IGNORE（主键或唯一索引冲突自动跳过）
 --   排班/号源同样靠唯一索引兜底，不会产生重复
 --   预约记录只对 status=1 且尚无记录的号源补插
+--
+-- 数据规模说明：
+--   第 1-6 步是基础数据，只有未来 7 天的号源，几百行；
+--   第 7 步补历史数据，把 reserve_record 撑到 5000+ 行。
+--   表小的时候 MySQL 会直接走全表扫描，schema.sql 里 idx_patient_phone
+--   这条索引优化（type=ALL 扫全表 → type=ref 命中单行）在小表上看不出差别，
+--   所以第 7 步默认执行；只想灌基础数据的话，把第 7 步整段注释掉。
 -- =====================================================================
 
 SET NAMES utf8mb4;
@@ -163,7 +170,96 @@ WHERE s.`status` = 1
   AND NOT EXISTS (SELECT 1 FROM `reserve_record` r WHERE r.`source_id` = s.`id`);
 
 -- ---------------------------------------------------------------------
--- 7. 执行结果自检
+-- 7. 压测数据扩充：补历史排班 / 号源 / 预约，把表撑到 5000+ 行
+--    做这个是为了让 schema.sql 里 idx_patient_phone 的优化能被验证：
+--    "导诊台按手机号查患者约过哪些号"这条查询，在没有索引时是全表扫描，
+--    有了索引只扫 1 行。但表只有几百行时优化器可能直接全表扫，
+--    两者差距看不出来，必须先把数据量堆上去。
+--
+--    为什么补的是"历史"而不是"未来"：
+--      未来号源受 7 天发布窗口约束（SourceTask 每天扫 findFuture7Days），
+--      硬造未来数据会和定时任务的实际行为打架；
+--      历史数据没有这个约束，而且"患者查自己约过的号"本来查的就是历史，
+--      正好是这条索引的真实使用场景。
+--
+--    天数说明：120 天是让 reserve_record 落到 5000+ 行所需的量，
+--              调大调小只影响数据量，不影响业务逻辑
+--    耗时说明：数千行写入，本地约 1-2 秒
+--    幂等说明：本段同样可以反复执行，不会产生重复记录
+-- ---------------------------------------------------------------------
+
+-- 7.1 历史排班：过去 120 天，出诊密度与未来排班共用一套取模规则
+INSERT IGNORE INTO `schedule` (`doctor_id`, `shift_date`, `shift_type`)
+WITH RECURSIVE `hist_days` (`dt`) AS (
+    SELECT CURDATE() - INTERVAL 120 DAY
+    UNION ALL
+    SELECT `dt` + INTERVAL 1 DAY FROM `hist_days` WHERE `dt` < CURDATE() - INTERVAL 1 DAY
+)
+SELECT
+    d.`id`                                                   AS `doctor_id`,
+    dy.`dt`                                                  AS `shift_date`,
+    CASE
+        WHEN MOD(d.`id` * 3 + DAYOFYEAR(dy.`dt`), 10) < 6 THEN 1
+        WHEN MOD(d.`id` * 3 + DAYOFYEAR(dy.`dt`), 10) < 9 THEN 2
+        ELSE 3
+    END                                                      AS `shift_type`
+FROM `doctor` d
+CROSS JOIN `hist_days` dy
+WHERE d.`status` = 0
+  -- 出诊频率同样是约 2/3 的日子
+  AND MOD(d.`id` * 7 + DAYOFYEAR(dy.`dt`), 3) <> 0;
+
+-- 7.2 历史号源：时段切分规则与第 4 步一致，窗口换成过去 120 天
+INSERT IGNORE INTO `source` (`doctor_id`, `shift_date`, `time_slot`)
+SELECT s.`doctor_id`, s.`shift_date`, m.`slot`
+FROM `schedule` s
+JOIN (
+    SELECT 1 AS `shift_type`, '08:00-09:00' AS `slot` UNION ALL
+    SELECT 1, '09:00-10:00' UNION ALL
+    SELECT 1, '10:00-11:00' UNION ALL
+    SELECT 2, '14:00-15:00' UNION ALL
+    SELECT 2, '15:00-16:00' UNION ALL
+    SELECT 2, '16:00-17:00' UNION ALL
+    SELECT 3, '18:00-19:00' UNION ALL
+    SELECT 3, '19:00-20:00'
+) m ON m.`shift_type` = s.`shift_type`
+WHERE s.`shift_date` BETWEEN CURDATE() - INTERVAL 120 DAY AND CURDATE() - INTERVAL 1 DAY;
+
+-- 7.3 标记已约：历史号源里约七成已经约出去了
+--     真实门诊的号源大部分会被约走，全留可约反而不像跑过的系统
+UPDATE `source`
+SET `status` = 1
+WHERE `shift_date` BETWEEN CURDATE() - INTERVAL 120 DAY AND CURDATE() - INTERVAL 1 DAY
+  AND `status` = 0
+  AND MOD(`id` * 13, 10) < 7;
+
+-- 7.4 历史预约记录：给已约的历史号源补患者信息
+--     create_time 落在就诊日前 1-3 天，符合提前预约的习惯
+INSERT INTO `reserve_record` (`source_id`, `patient_name`, `patient_phone`, `status`, `create_time`)
+SELECT
+    s.`id`                                                          AS `source_id`,
+    CONCAT(
+        ELT(MOD(s.`id`, 12) + 1, '张','王','李','赵','刘','陈','杨','黄','周','吴','徐','孙'),
+        ELT(MOD(s.`id` * 7, 20) + 1, '伟','芳','娜','敏','静','丽','强','磊','军','洋',
+                                      '勇','艳','杰','娟','涛','明','霞','鹏','婷','斌'),
+        IF(MOD(s.`id`, 3) = 0,
+           ELT(MOD(s.`id` * 11, 8) + 1, '华','宁','佳','宇','琳','峰','悦','轩'),
+           '')
+    )                                                               AS `patient_name`,
+    CONCAT(
+        '1',
+        ELT(MOD(s.`id`, 6) + 1, '38','39','58','59','86','88'),
+        LPAD(MOD(s.`id` * 7919, 100000000), 8, '0')
+    )                                                               AS `patient_phone`,
+    1                                                               AS `status`,
+    TIMESTAMP(s.`shift_date`) - INTERVAL (MOD(s.`id`, 3) + 1) DAY    AS `create_time`
+FROM `source` s
+WHERE s.`status` = 1
+  AND s.`shift_date` BETWEEN CURDATE() - INTERVAL 120 DAY AND CURDATE() - INTERVAL 1 DAY
+  AND NOT EXISTS (SELECT 1 FROM `reserve_record` r WHERE r.`source_id` = s.`id`);
+
+-- ---------------------------------------------------------------------
+-- 8. 执行结果自检
 -- ---------------------------------------------------------------------
 SELECT '科室(clinic_dept)'      AS `表`, COUNT(*) AS `条数` FROM `clinic_dept`
 UNION ALL SELECT '医生(doctor)',        COUNT(*) FROM `doctor`
