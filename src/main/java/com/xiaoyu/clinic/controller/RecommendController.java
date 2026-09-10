@@ -31,5 +31,20 @@ public class RecommendController {
         // 因为降级文案对前端来说是"正常业务结果"，不是错误
         return Result.success(deepseekService.recommend(symptom));
     }
+
+    @Operation(summary = "Agent 版症状导诊（模型带工具查库）")
+    @PostMapping("/agent/recommend")
+    public Result<String> agentRecommend(
+            @RequestBody Map<String, String> params) {
+        String symptom = params.get("symptom");
+
+        // 和旧接口同一套校验：空症状不调 AI（省 token）
+        if (symptom == null || symptom.isBlank()) {
+            return Result.error(4001, "症状描述不能为空");
+        }
+
+        // 降级文案也是 success：对前端来说是正常业务结果
+        return Result.success(deepseekService.chatWithTools(symptom));
+    }
 }
 
