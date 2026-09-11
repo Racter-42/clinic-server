@@ -1,6 +1,6 @@
 # 医院门诊医生排班与号源平台
 
-面向小型连锁门诊诊所的**医生排班与号源管理**后端服务，覆盖「排班 → 号源生成 → 挂号预约 → 操作审计」完整业务链路，个人独立开发。
+面向小型连锁门诊诊所的**医生排班与号源管理**后端服务，覆盖「医生排班 → 号源自动生成 → 患者预约 → 智能导诊」完整业务链路，个人独立开发。
 
 > 项目重点不在增删改查，而在三个实际的线上问题：**并发预约不超卖、表单不重复提交、缓存与数据库不脏读**。
 
@@ -82,6 +82,8 @@
 | POST | `/upload` | 图片上传（类型白名单 + UUID 重命名） | ✅ |
 
 白名单（无需登录）：`/login`、`/uploads/**`、`/doc.html`、`/swagger-ui/**`、`/v3/api-docs/**`、`/webjars/**`、`/knife4j/**`
+
+上面这张表对应的机器可读接口描述，已导出并随仓库提供：`docs/openapi.json`（由 `GET /v3/api-docs` 导出，OpenAPI 3.1，共 17 个路径）。不想启动服务时，可以直接看它确认接口签名。
 
 ---
 
@@ -318,7 +320,7 @@ src/main/java/com/xiaoyu/clinic
 ├── service         # 业务逻辑层：事务边界、缓存三防、第三方调用、AI 工具注册与分发
 ├── mapper          # MyBatis 数据访问层（注解方式）
 ├── pojo            # 实体 / DTO / 统一响应 Result
-├── config          # 拦截器注册、静态资源映射、JWT 密钥配置桥接
+├── config          # 拦截器注册、静态资源映射、JWT 密钥配置桥接、缓存延迟双删线程池
 ├── interceptor     # JWT 登录拦截器
 ├── aspect          # AOP 操作审计切面
 ├── exception       # 自定义业务异常 + 全局异常处理器
@@ -438,6 +440,7 @@ curl -X POST "http://localhost:8080/reserve?token=<上一步的token>&sourceId=1
 | 缓存锁递归重试 | 高并发下有栈溢出风险 | 改为有限轮询 3 轮 + 查库兜底 |
 | 锁没有身份导致误删他人锁 | 临界区超时后锁被他人拿到，`finally` 里直接 `delete` 会把别人的锁删掉 | 加锁写入 UUID 持有者标识，解锁用 Lua 脚本比对后删除（`utils/RedisLock`） |
 | Boot 4 的 Jackson 版本冲突 | `ObjectMapper` 按 Jackson 2 包名注入，编译能过但启动报「找不到对应 bean」 | 项目是 Boot 4.1.1，容器注册的是 Jackson 3（`tools.jackson`）；classpath 上另有 jjwt 传递带入的 Jackson 2，两套共存。改用 `tools.jackson.databind.ObjectMapper` |
+| 延迟双删用裸 `new Thread` | 并发更新时线程数随请求一起涨，线程创建/销毁有额外开销，`catch` 还是空的、异常被吞掉查不到 | 改为共享调度线程池 `ScheduledExecutorService` 提交延迟任务（`config/ThreadPoolConfig`）：线程复用、数量固定，异常写日志 |
 
 ---
 
