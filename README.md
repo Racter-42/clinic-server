@@ -1,9 +1,8 @@
 # 医院门诊医生排班与号源平台
 
-面向小型连锁门诊诊所的**医生排班与号源管理**后端服务，覆盖「排班 → 号源生成 → 挂号预约 → 诊疗留痕」完整业务链路。
-个人独立开发项目，需求分析、库表设计、接口开发、并发安全设计与文档维护均由本人完成。
+面向小型连锁门诊诊所的**医生排班与号源管理**后端服务，覆盖「排班 → 号源生成 → 挂号预约 → 操作审计」完整业务链路，个人独立开发。
 
-> **一句话概括技术含量**：这是一个把「**高并发下不超卖、不重复提交、缓存不脏读**」三个真实生产问题完整落地的项目，而不只是增删改查。
+> 项目重点不在增删改查，而在三个实际的线上问题：**并发预约不超卖、表单不重复提交、缓存与数据库不脏读**。
 
 ---
 
@@ -13,7 +12,7 @@
 | --- | --- | --- |
 | 接口性能 | 高频读接口热缓存约 12ms / 冷缓存 13-21ms（单并发冒烟实测，测试代码在仓库可复现） | `DoctorService` / `SourceService` |
 | 并发安全 | 号源防超卖三道防线：状态位条件 UPDATE（CAS）+ `uk_source_id` 唯一索引物理兜底 + Redis 防重令牌，层层拦截 | `ReserveService` |
-| 缓存可靠性 | 缓存三防（穿透 / 击穿 / 雪崩）+ 延迟双删保证一致性 | `DoctorService` / `SourceService` |
+| 缓存可靠性 | 缓存三防（穿透 / 击穿 / 雪崩）+ 写后失效（延迟双删 / `afterCommit` 回调）；击穿防护用 `SET NX EX` 加锁，UUID 标识持有者、Lua 比对后释放 | `DoctorService` / `SourceService` / `utils/RedisLock` |
 | 查询优化 | 按手机号查预约记录接口（导诊台）落在 `idx_patient_phone` 上，`EXPLAIN` 由 `type=ALL` 扫 5000+ 行 → `type=ref` 扫 1 行 | `ReserveRecordMapper` / `reserve_record.idx_patient_phone` |
 | 第三方容错 | Deepseek 智能导诊：超时控制 + 失败重试 + 降级兜底，AI 挂了不影响挂号主流程 | `DeepseekService` |
 | AI 工程化 | Agent 版导诊走 Function Calling：模型先调工具查真实科室与排班，再据此作答，从源头避免「凭症状编造科室」 | `AgentToolRegistry` / `DeepseekService` |
@@ -22,18 +21,18 @@
 
 ## 业务痛点与对应解法
 
-项目的每张表、每个索引、每段加锁代码，都对应一个真实的业务问题：
+以下每个设计点都对应一个具体的业务问题：
 
 | 业务痛点 | 解法 | 落地位置 |
 | --- | --- | --- |
-| 医生停诊不能物理删除（医疗合规要求诊疗记录留痕） | `status` 软删除：0 在岗 / 1 停诊 / 2 离职，删除改更新，查询过滤 | `doctor` 表 + `DoctorService` |
+| 医生停诊不能物理删除（医疗记录需留痕，且历史排班 / 号源 / 预约仍引用该医生） | `status` 软删除：0 在岗 / 1 停诊 / 2 离职，删除改更新，查询过滤 | `doctor` 表 + `DoctorService` |
 | 执业证号重复会引发医疗事故 | `uk_license` 唯一索引 + 全局异常转 4001 | `schema.sql` |
 | 同一医生同时段重复排班 | 联合唯一索引 `uk_doctor_shift (doctor_id, shift_date, shift_type)` 物理拦截 | `schedule` 表 |
 | **号源被重复预约（超卖）** | `UPDATE source SET status=1 WHERE id=? AND status=0` 判断影响行数（1 抢到 / 0 被抢） | `SourceMapper#reserve` |
-| 同一号源生成多条预约记录 | `uk_source_id` 唯一索引兜底，乐观锁失效时的最后防线 | `reserve_record` 表 |
+| 同一号源生成多条预约记录 | `uk_source_id` 唯一索引兜底，CAS 失效时的最后防线 | `reserve_record` 表 |
 | 号源靠人工录入效率低 | `@Scheduled` 定时扫描未来 7 天排班自动生成号源 | `SourceTask` |
 | 高频读接口响应慢 | Redis 缓存科室医生列表 + 未来 7 天号源，含穿透 / 击穿 / 雪崩三防 | `DoctorService` / `SourceService` |
-| 用户重复点击导致重复挂号 | 一次性防重令牌：Redis 生成 token，提交时原子删除校验 | `ReserveController` / `ReserveService` |
+| 同一表单被重复提交导致重复挂号 | 一次性防重令牌：Redis 生成 token，提交时原子删除校验 | `ReserveController` / `ReserveService` |
 | 「谁改了什么」事后无法追溯 | AOP 环绕切面记录操作人 / IP / 参数 / 耗时，落 `audit_log` 表 | `AuditLogAspect` |
 
 ---
@@ -65,7 +64,7 @@
 | 方法 | 路径 | 说明 | 需登录 |
 | --- | --- | --- | --- |
 | POST | `/login` | 登录，返回 JWT | ❌ |
-| GET | `/doctor/list` | 医生列表（**Redis 三防缓存 + 延迟双删**） | ✅ |
+| GET | `/doctor/list` | 医生列表（**Redis 三防缓存**） | ✅ |
 | POST | `/doctor/add` | 新增医生（`@Valid` 校验 + 执业证号唯一） | ✅ |
 | PUT | `/doctor/update` | 更新医生（**延迟双删**保证缓存一致） | ✅ |
 | DELETE | `/doctor/delete/{id}` | 停诊（软删除） | ✅ |
@@ -86,13 +85,13 @@
 
 ---
 
-## 并发与数据一致性设计（本项目核心）
+## 并发与数据一致性设计
 
 ### 1. 号源防超卖：三道防线
 
 ```
-第一道：Redis 防重令牌（SETNX）  → 拦住「同一个人重复点击」
-第二道：数据库 CAS 乐观锁        → 拦住「多个人抢同一个号」
+第一道：Redis 防重令牌（SETNX）  → 拦住「同一份表单被提交两次」
+第二道：数据库 CAS（条件 UPDATE） → 拦住「多个人抢同一个号」
 第三道：uk_source_id 唯一索引    → 兜底，防止前两道都失效
 ```
 
@@ -123,7 +122,7 @@ Redis 的 `DEL` 是单线程原子操作，天然适合做「只能成功一次�
 | 问题 | 场景 | 解法 |
 | --- | --- | --- |
 | 穿透 | 查不存在的数据，每次都打数据库 | 空结果也写 `EMPTY` 占位，**2 分钟短过期** |
-| 击穿 | 单个热点 key 过期瞬间大量请求涌入 | `setIfAbsent` 互斥锁，只放 1 个线程回源 + 双重检查 + `finally` 释放锁 |
+| 击穿 | 单个热点 key 过期瞬间大量请求涌入 | Redis 分布式锁（`SET NX EX`），只放 1 个线程回源 + 双重检查 + `finally` 中按持有者释放 |
 | 雪崩 | 大批 key 同时过期 | 过期时间加随机值 `30 + ThreadLocalRandom.nextInt(3)` 分钟 |
 | 一致性（低频写） | 医生资料更新后列表缓存是旧值 | 延迟双删：先删缓存 → 更新数据库 → 延迟 500ms 再删一次（`DoctorService#update`） |
 | 一致性（高频写） | 预约成功后号源缓存仍显示「可约」 | `afterCommit` 回调：注册事务提交成功后再删缓存（`ReserveService`） |
@@ -132,13 +131,37 @@ Redis 的 `DEL` 是单线程原子操作，天然适合做「只能成功一次�
 
 > 实现细节：没抢到锁的线程不无限递归（防栈溢出），改为**最多轮询 3 轮、每轮 50ms**，超时则直接查库兜底——缓存只是加速，数据库才是权威。
 
+#### 击穿防护的锁：为什么要校验持有者
+
+防击穿的锁最初写成 `setIfAbsent(key, "1", 10秒)` + `finally` 里直接 `delete`，有两个问题：
+
+- **锁没有身份**：所有锁的值都是 `"1"`，释放时无从判断这把锁是不是自己加的
+- **误删他人锁的事故链**：A 的临界区执行超过 10 秒 → 锁自动过期 → B 拿到锁进入临界区 → A 执行完在 `finally` 里把 B 的锁删掉 → C 又能拿到锁，B 与 C 同时进入临界区，锁形同虚设
+
+改为独立组件 `utils/RedisLock`：
+
+| 环节 | 做法 | 原因 |
+| --- | --- | --- |
+| 加锁 | `SET key <UUID> NX EX 10` | `NX`（不存在才写）与 `EX`（过期时间）必须在**同一条命令**里。拆成 `SETNX` + `EXPIRE` 两步，中间进程退出就会留下永不过期的锁，比误删严重得多 |
+| 解锁 | Lua 脚本：`GET` 比对持有者，相等才 `DEL` | 分成两步做的话，比对与删除之间锁可能刚好过期并被他人拿走。Lua 脚本在 Redis 中整段执行，中间插不进其他命令 |
+| 持有者标识 | 每次加锁生成一个 UUID，解锁时原样传回 | 判断「锁是不是自己的」的唯一依据 |
+
+实测（冷缓存 + 20 并发，用 `performance_schema` 统计真实 SQL 执行次数）：
+
+| 场景 | `SELECT * FROM doctor` 执行次数 |
+| --- | --- |
+| 锁正常工作 | 1 |
+| 人为占死锁（对照组） | 20 |
+
+> 已知边界：等不到锁的线程等待预算为 3 × 50ms = 150ms，超过则按设计直接查库兜底（临界区实测约 15ms，正常负载不会触发）；锁为单节点实现，未使用 Redlock；不可重入，也无自动续期。
+
 **Redis key 命名规范**（统一 `业务域:用途` 两段式，避免多模块 key 冲突）：
 
 | Key | 用途 | 过期 |
 | --- | --- | --- |
 | `doctor:list` | 医生列表缓存 | 30-32 分钟（含随机值） |
 | `source:list:future7days` | 未来 7 天号源缓存 | 30-32 分钟（含随机值） |
-| `lock:{key}` | 缓存击穿互斥锁 | 10 秒 |
+| `lock:{key}` | 缓存击穿锁，值为持有者 UUID | 10 秒 |
 | `reserve:token:{uuid}` | 挂号防重令牌 | 10 分钟 |
 
 > 选用 `StringRedisTemplate` 而非 `RedisTemplate`：后者默认走 JDK 二进制序列化，存进去的数据在 `redis-cli` 里看是乱码，排查问题极不方便；前者存明文 JSON，可直接在命令行 `GET` 出来核对。
@@ -173,7 +196,7 @@ WHERE id = #{id} AND version = #{version}
 | 冷缓存（每轮 `DEL` 后真走 MySQL） | 13-21ms | 10ms | 38ms | 两轮样本均值漂移，受 JVM / GC 影响 |
 | 热缓存（命中 Redis） | 12-13ms | 8ms | 29ms | Redis 读 + JSON 反序列化 |
 
-**测试类**：`src/test/java/com/xiaoyu/clinic/benchmark/CacheBenchmark.java`（带 `main` 方法，直接跑，不启动 Spring 容器）。
+**测试类**：`src/test/java/com/xiaoyu/clinic/benchmark/CacheBenchmark.java`（带 `main` 方法，需**先启动应用**再运行，以「用户名 密码」为参数，例如 `CacheBenchmark admin 123456`）。
 
 **测法**：
 
@@ -189,7 +212,7 @@ for (int i = 0; i < ROUNDS; i++) {
 }
 ```
 
-> 注：耗时为端到端（HTTP + Controller + 序列化 + SQL/Redis）。单并发下本机 MySQL 本身极快，冷热差距不能代表高并发场景的收益；本项目未做并发压测。
+> 注：耗时为端到端（HTTP + Controller + 序列化 + SQL/Redis）。单并发下本机 MySQL 本身极快，冷热差距不能代表高并发场景的收益。本项目未做性能压测；并发相关的验证只针对缓存击穿的锁，测的是「并发下数据库被查了几次」，见上文第 3 节。
 
 ---
 
@@ -208,7 +231,7 @@ for (int i = 0; i < ROUNDS; i++) {
 - 患者手机号 `^1[3-9]\d{9}$` —— 挂号关键联系方式，格式错误会导致回访失败
 - 执业证号 `^\d{15}$` —— 医疗规范 15 位数字，唯一性另由 `uk_license` 唯一索引保证
 
-全局异常处理器按类型分级返回，**绝不把堆栈暴露给前端**：
+全局异常处理器按类型分级返回，**绝不把堆栈暴露给调用方**：
 
 | 异常类型 | 错误码 | 场景 |
 | --- | --- | --- |
@@ -295,12 +318,12 @@ src/main/java/com/xiaoyu/clinic
 ├── service         # 业务逻辑层：事务边界、缓存三防、第三方调用、AI 工具注册与分发
 ├── mapper          # MyBatis 数据访问层（注解方式）
 ├── pojo            # 实体 / DTO / 统一响应 Result
-├── config          # 拦截器注册、静态资源映射
+├── config          # 拦截器注册、静态资源映射、JWT 密钥配置桥接
 ├── interceptor     # JWT 登录拦截器
 ├── aspect          # AOP 操作审计切面
 ├── exception       # 自定义业务异常 + 全局异常处理器
 ├── task            # 号源生成定时任务
-├── utils           # JWT 工具类
+├── utils           # JWT 工具类、Redis 分布式锁
 └── ClinicServerApplication
 
 另有 `src/test/java/com/xiaoyu/clinic/benchmark/CacheBenchmark.java`：缓存冷热性能对比（带 `main` 方法，需先启动应用再运行）。
@@ -328,13 +351,14 @@ JDK 17+、MySQL 8、Redis、Maven
    mysql -uroot -p clinic < src/main/resources/sql/schema.sql
    ```
 
-3. 灌入测试数据（可选，建议执行——否则接口和页面看到的都是空表）
+3. 灌入测试数据（可选，建议执行——否则接口查到的都是空表）
    ```bash
    mysql -uroot -p clinic < src/main/resources/sql/data.sql
    ```
-   生成 12 个科室、32 名医生、未来 14 天排班与 7 天号源，并给部分号源配上患者信息。
+   生成 12 个科室、32 名医生、未来 7 天号源与预约记录，并补充 120 天历史排班 / 号源 / 预约，
+   使 `reserve_record` 达到 5000+ 行——上方索引优化前后的 `EXPLAIN` 对比需要这个数据量才能复现。
    脚本可重复执行，靠唯一索引与 `INSERT IGNORE` 保证幂等，重复跑不会产生重复数据。
-   排班窗口比号源宽是刻意的：排班由管理员提前排定，号源则由定时任务每天滚动发布未来 7 天。
+   历史数据是刻意的：未来号源受 7 天发布窗口约束，且唯一键限制同一医生每天最多 256 条，堆不到这个量级。
 
 4. 准备配置文件：复制配置模板并改名为 `application.properties`
 
@@ -408,18 +432,20 @@ curl -X POST "http://localhost:8080/reserve?token=<上一步的token>&sourceId=1
 | 坑 | 现象 | 解决 |
 | --- | --- | --- |
 | 事务内删缓存导致脏读 | 预约成功后列表仍显示「可约」 | 改用 `afterCommit` 回调，事务提交后再删 |
-| 上传超限返回 Tomcat HTML 错误页 | 前端拿不到 JSON | 配置 `spring.servlet.multipart.resolve-lazily=true`，让异常在 Controller 层抛出 |
+| 上传超限返回 Tomcat HTML 错误页 | 调用方拿到的是 HTML 而非 JSON | 配置 `spring.servlet.multipart.resolve-lazily=true`，让异常在 Controller 层抛出 |
 | 静态资源映射路径缺尾斜杠 | 图片访问 404 | location 结尾补 `/`，并加 `file:` 前缀 |
 | 平铺参数 `@Valid` 不生效 | 校验注解写了但没拦截 | 改为类上加 `@Validated` |
-| 缓存互斥锁递归重试 | 高并发下有栈溢出风险 | 改为有限轮询 3 轮 + 查库兜底 |
+| 缓存锁递归重试 | 高并发下有栈溢出风险 | 改为有限轮询 3 轮 + 查库兜底 |
+| 锁没有身份导致误删他人锁 | 临界区超时后锁被他人拿到，`finally` 里直接 `delete` 会把别人的锁删掉 | 加锁写入 UUID 持有者标识，解锁用 Lua 脚本比对后删除（`utils/RedisLock`） |
 | Boot 4 的 Jackson 版本冲突 | `ObjectMapper` 按 Jackson 2 包名注入，编译能过但启动报「找不到对应 bean」 | 项目是 Boot 4.1.1，容器注册的是 Jackson 3（`tools.jackson`）；classpath 上另有 jjwt 传递带入的 Jackson 2，两套共存。改用 `tools.jackson.databind.ObjectMapper` |
 
 ---
 
-## AI 辅助开发说明
+## AI 工具使用情况
 
-开发过程中使用 AI 工具辅助，主要用于：样板代码生成（CRUD 与 SQL）、报错解释、模拟面试官提问。
-**表结构设计、业务逻辑、并发安全方案、bug 调试与每行代码的人工审查均由本人完成**，可讲解其具体实现细节与取舍原因。
+开发过程中使用 AI 编程工具，主要用于 CRUD 与 SQL 的初稿生成、报错信息解释、文档文字整理。
+
+有几类问题是在排查过程中定位并修正的，例如缓存删除时机（事务未提交就删缓存导致脏读）、Spring Boot 4 下 Jackson 2 与 3 共存导致的启动失败，过程记录在「开发中踩过的坑」一节。
 
 ---
 
