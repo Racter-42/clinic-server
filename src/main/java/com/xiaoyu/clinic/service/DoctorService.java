@@ -3,6 +3,7 @@ package com.xiaoyu.clinic.service;
 import com.alibaba.fastjson2.JSON;                          // fastjson2：对象 ↔ JSON 互转
 import com.xiaoyu.clinic.mapper.DoctorMapper;
 import com.xiaoyu.clinic.pojo.Doctor;
+import com.xiaoyu.clinic.utils.RedisLock;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -22,6 +23,9 @@ public class DoctorService {
     @Autowired
     private StringRedisTemplate redisTemplate;
 
+    @Autowired
+    private RedisLock redisLock;                           // 分布式锁（防缓存击穿）
+
     // ========== 带缓存 + 三防的医生列表查询 ==========
     public List<Doctor> listAll() {
         String key = "doctor:list";                        // 缓存的 key
@@ -32,11 +36,10 @@ public class DoctorService {
             return cachedList;
         }
 
-        // ② 防击穿（第二道）：互斥锁 SETNX，只让 1 个线程查数据库
+        // ② 防击穿（第二道）：分布式锁，只让 1 个线程查数据库
         String lockKey = "lock:" + key;                    // 锁的 key，约定 "lock:" 前缀
-        Boolean locked = redisTemplate.opsForValue()
-                .setIfAbsent(lockKey, "1", 10, TimeUnit.SECONDS);   // 抢锁（不存在才成功）
-        if (Boolean.TRUE.equals(locked)) {                 // 抢到锁了
+        String owner = redisLock.tryLock(lockKey, 10);     // 抢锁（拿不到返回 null），10 秒自动过期
+        if (owner != null) {                               // 抢到锁了
             try {
                 // 双重检查：等锁的线程可能已经把缓存写好了，别再查一次库
                 cachedList = readCache(key);
@@ -46,7 +49,8 @@ public class DoctorService {
                 // 真正查库 + 写缓存（只有抢到锁的这 1 个线程会执行）
                 return queryAndCache(key);
             } finally {
-                redisTemplate.delete(lockKey);             // 释放锁（必须 finally，出异常也释放）
+                // 释放锁（必须 finally，出异常也释放）；只删自己加的锁，不误删别人的
+                redisLock.unlock(lockKey, owner);
             }
         }
 

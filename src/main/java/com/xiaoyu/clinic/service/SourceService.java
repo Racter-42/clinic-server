@@ -3,6 +3,7 @@ package com.xiaoyu.clinic.service;
 import com.alibaba.fastjson2.JSON;
 import com.xiaoyu.clinic.mapper.SourceMapper;
 import com.xiaoyu.clinic.pojo.Source;
+import com.xiaoyu.clinic.utils.RedisLock;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,9 @@ public class SourceService {
     @Autowired
     private StringRedisTemplate redisTemplate;  // Redis 工具
 
+    @Autowired
+    private RedisLock redisLock;                // 分布式锁（防缓存击穿）
+
     // ========== 未来 7 天号源 + 缓存三防（与医生列表对称）==========
     public List<Source> listFuture7Days() {
         String key = "source:list:future7days";              // 号源缓存的 key
@@ -31,11 +35,10 @@ public class SourceService {
             return cachedList;
         }
 
-        // ② 防击穿：互斥锁
+        // ② 防击穿：分布式锁，同一时间只放一个线程去查库
         String lockKey = "lock:" + key;
-        Boolean locked = redisTemplate.opsForValue()
-                .setIfAbsent(lockKey, "1", 10, TimeUnit.SECONDS);
-        if (Boolean.TRUE.equals(locked)) {
+        String owner = redisLock.tryLock(lockKey, 10);   // 10 秒自动过期，防持锁方卡死后锁永不释放
+        if (owner != null) {
             try {
                 // 双重检查：等锁的线程可能已经把缓存写好了
                 cachedList = readCache(key);
@@ -45,7 +48,8 @@ public class SourceService {
                 // 真正查库 + 写缓存
                 return queryAndCache(key);
             } finally {
-                redisTemplate.delete(lockKey);
+                // 只删自己加的锁：万一临界区跑超了 10 秒、锁已被别人拿走，不能误删
+                redisLock.unlock(lockKey, owner);
             }
         }
 
