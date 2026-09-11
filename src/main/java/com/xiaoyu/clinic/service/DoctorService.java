@@ -4,18 +4,24 @@ import com.alibaba.fastjson2.JSON;                          // fastjson2：对�
 import com.xiaoyu.clinic.mapper.DoctorMapper;
 import com.xiaoyu.clinic.pojo.Doctor;
 import com.xiaoyu.clinic.utils.RedisLock;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;                              // 空列表
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ScheduledExecutorService;     // 调度线程池（延迟双删）
 import java.util.concurrent.ThreadLocalRandom;            // 随机数（防雪崩）
 import java.util.concurrent.TimeUnit;
 
 @Service
 public class DoctorService {
+
+    private static final Logger log = LoggerFactory.getLogger(DoctorService.class);
 
     @Autowired
     private DoctorMapper mapper;
@@ -25,6 +31,10 @@ public class DoctorService {
 
     @Autowired
     private RedisLock redisLock;                           // 分布式锁（防缓存击穿）
+
+    @Autowired
+    @Qualifier("cacheDelayExecutor")                       // 延迟双删专用线程池（见 ThreadPoolConfig）
+    private ScheduledExecutorService cacheDelayExecutor;
 
     // ========== 带缓存 + 三防的医生列表查询 ==========
     public List<Doctor> listAll() {
@@ -109,14 +119,16 @@ public class DoctorService {
         // 2. 更新数据库
         mapper.update(d);
         // 3. 延迟 500ms 再删一次（防中间有请求读到旧数据写回缓存）
-        new Thread(() -> {
+        //    交给共享线程池调度：线程复用、数量固定，不再每来一个更新就新建一个线程
+        cacheDelayExecutor.schedule(() -> {
             try {
-                Thread.sleep(500);                    // 等 500ms
+                redisTemplate.delete("doctor:list");  // 第二次删缓存
             } catch (Exception e) {
-                // sleep 被打断：空 catch 兜底，不往外抛
+                // 删缓存失败最坏只是缓存旧一点，下次查询会回源重建；
+                // 但它跑在线程池里，不能让异常把线程搞挂，所以这里兜住并记日志
+                log.warn("延迟双删失败，key=doctor:list", e);
             }
-            redisTemplate.delete("doctor:list");      // 第二次删缓存
-        }).start();                                    // 异步执行，不阻塞当前请求
+        }, 500, TimeUnit.MILLISECONDS);               // 延迟 500ms 执行，不阻塞当前请求
     }
 
     public void delete(Integer id){ mapper.delete(id);}
